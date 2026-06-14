@@ -849,6 +849,40 @@ not need to edit them for a new project.
   research). Sub-agents inherit `bypassPermissions` and the same tools,
   but cannot push or merge — those stay on the parent worker.
 
+## Releasing (maintainers)
+
+This package is published to npm by CI via **trusted publishing (OIDC)** — no
+tokens or secrets. The workflow [`.github/workflows/publish.yml`](.github/workflows/publish.yml)
+triggers on a **published GitHub Release** (not on a plain tag push), upgrades npm,
+smoke-tests the CLI, skips any version already on the registry, and runs
+`npm publish --provenance`.
+
+To cut a release:
+
+```bash
+# 1. land your work
+git commit -am "…"
+
+# 2. bump the version (commits + tags vX.Y.Z for you)
+npm version patch        # or: minor / major
+
+# 3. push the commit and the tag
+git push --follow-tags
+
+# 4. publish a GitHub Release for that tag — THIS is the deploy trigger
+gh release create vX.Y.Z --generate-notes
+```
+
+Notes:
+
+- **Pushing commits or a bare tag does not publish.** Only a *published Release*
+  does. Creating the Release in the GitHub UI ("Publish release") works too.
+- **Bump the version first.** A Release whose `package.json` version is already on
+  npm runs green but publishes nothing (the workflow's skip guard).
+- The first publish (`0.1.0`) was done manually; everything after goes through CI.
+- One-time trusted-publisher registration (already done) lives in npm →
+  *claudopilot → Settings → Trusted Publisher* and must match the workflow filename.
+
 ## Why this shape
 
 Three design pressures shaped the loop:
