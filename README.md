@@ -1,5 +1,8 @@
 # Claudopilot
 
+[![npm version](https://img.shields.io/npm/v/claudopilot.svg)](https://www.npmjs.com/package/claudopilot)
+[![license](https://img.shields.io/npm/l/claudopilot.svg)](./LICENSE)
+
 Autonomous execution loop for [Claude Code](https://claude.com/claude-code).
 Feed it a roadmap of phases. The driver runs **every currently-eligible phase
 concurrently** — bounded by `MAX_PARALLEL` — each in its own git worktree on

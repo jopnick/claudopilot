@@ -1,0 +1,54 @@
+name: Publish to npm
+
+# Publishes the package whenever a GitHub Release is published.
+# Uses npm "trusted publishing" (OIDC) — no NPM_TOKEN secret required.
+#
+# One-time setup (npmjs.com → claudopilot → Settings → Trusted Publisher):
+#   Provider:    GitHub Actions
+#   Repository:  jopnick/claudopilot
+#   Workflow:    publish.yml
+#   Environment: (leave blank)
+# Until that is configured, this workflow will fail at the publish step.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC trusted publishing + provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing + --provenance need a recent npm.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Smoke-test the CLI
+        run: node bin/claudopilot.mjs --version
+
+      # Skip if this version is already on the registry (e.g. re-running the
+      # v0.1.0 release). Only a fresh version bump actually publishes.
+      - name: Check if version already published
+        id: check
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          if npm view "claudopilot@$VER" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "claudopilot@$VER already published — skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.check.outputs.exists == 'false'
+        run: npm publish --provenance --access public
