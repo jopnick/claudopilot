@@ -1,0 +1,8 @@
+node_modules/
+.claude/
+.claudopilot/
+.claudopilot.log
+*.log
+build-logs/
+.DS_Store
+*.tgz

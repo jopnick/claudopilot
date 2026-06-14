@@ -1,0 +1,52 @@
+{
+  "name": "claudopilot",
+  "version": "0.1.0",
+  "description": "Autonomous parallel execution loop for Claude Code — feed it a dependency-annotated roadmap and it builds every eligible phase concurrently, each in its own git worktree, merging green work and parking red.",
+  "type": "module",
+  "bin": {
+    "claudopilot": "bin/claudopilot.mjs"
+  },
+  "files": [
+    "bin/",
+    "run-loop.sh",
+    "run-in-docker.sh",
+    "worker-entry.sh",
+    "render-stream.mjs",
+    "progress.mjs",
+    "progress.sh",
+    "Dockerfile",
+    "prompts/worker.md",
+    "prompts/supervisor.md",
+    "templates/",
+    "README.md",
+    "EXTRACTION.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node bin/claudopilot.mjs --version"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "ai",
+    "agent",
+    "autonomous",
+    "orchestrator",
+    "codegen",
+    "automation",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "jopnick",
+  "homepage": "https://github.com/jopnick/claudopilot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jopnick/claudopilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jopnick/claudopilot/issues"
+  }
+}
