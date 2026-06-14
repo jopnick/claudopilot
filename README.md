@@ -110,8 +110,17 @@ single-page app. It polls the same model as `progress.mjs`, lists every phase/ag
 with live state, slice progress, and current activity, and — when you click an agent —
 streams that worker's **thought stream** (assistant text, thinking, tool calls and
 results) by tailing its rendered transcript, auto-scrolling as new output lands. No
-build step and no network: lit-html is vendored. Run it from the repo root alongside
-a live `claudopilot run`.
+build step and no network: lit-html is vendored.
+
+**It starts automatically with every `claudopilot run`** — the launcher brings the
+dashboard online alongside the loop and prints `Dashboard: http://127.0.0.1:4317`. In
+default mode it runs inside the container with the port published to the host
+loopback; in `--isolated` mode it runs on the host. Knobs:
+
+- `CLAUDOPILOT_WEB=0` — disable auto-start (run `claudopilot web` manually instead).
+- `CLAUDOPILOT_WEB_PORT=<n>` — change the port (default `4317`).
+
+You can also run it standalone any time from the repo root: `claudopilot web`.
 
 `init` writes the engine scripts under `./claudopilot/` (so the Docker layout
 below resolves) and leaves `claudopilot.config.sh`, the roadmap, and
@@ -599,6 +608,10 @@ All overridable in env at launch time.
 | `IGNORE_LOOP_CHECKPOINTS` | `0` | When `1`, ignore `<!-- LOOP-CHECKPOINT: ... -->` blocks and proceed to the next pending phase. Real halts (dep errors, supervisor exhaustion, rate limits) still fire. |
 | **Docker** | | |
 | `CLAUDOPILOT_IMAGE_TAG` | `claudopilot-runner` | Image tag + container name. Useful if you run multiple loops on one host. |
+| **Web dashboard** | | |
+| `CLAUDOPILOT_WEB` | `1` | Auto-start the dashboard with each `claudopilot run`. Set `0` to disable. |
+| `CLAUDOPILOT_WEB_PORT` | `4317` | Host port for the dashboard (`http://127.0.0.1:<port>`). |
+| `CLAUDOPILOT_WEB_HOST` | `127.0.0.1` | Bind address for `web-server.mjs` (the Docker launcher sets `0.0.0.0` inside the container; the published port stays host-loopback). |
 
 ## Exit codes
 

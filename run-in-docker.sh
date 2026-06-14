@@ -29,6 +29,38 @@ docker build \
   --build-arg "HOST_GID=$HOST_GID" \
   .
 
+# ── Web dashboard ───────────────────────────────────────────────────────────
+# Auto-start the read-only dashboard (claudopilot web) alongside the run so it is
+# always available while the loop runs. Default mode serves it from INSIDE the
+# container (node is always present there) with the port published to the host on
+# loopback. Isolated mode serves it from the host (the orchestrator already runs
+# node here). Opt out with CLAUDOPILOT_WEB=0; change the port with CLAUDOPILOT_WEB_PORT.
+CLAUDOPILOT_WEB="${CLAUDOPILOT_WEB:-1}"
+CLAUDOPILOT_WEB_PORT="${CLAUDOPILOT_WEB_PORT:-4317}"
+WEB_URL="http://127.0.0.1:${CLAUDOPILOT_WEB_PORT}"
+
+# Start the dashboard on the HOST (used by isolated mode). Sets HOST_WEB_PID.
+HOST_WEB_PID=""
+start_host_web() {
+  [[ "$CLAUDOPILOT_WEB" == "1" ]] || return 0
+  if ! command -v node >/dev/null 2>&1; then
+    echo "[run-in-docker] web dashboard skipped (no host 'node'); set CLAUDOPILOT_WEB=0 to silence." >&2
+    return 0
+  fi
+  CLAUDOPILOT_WEB_HOST=127.0.0.1 node "$REPO_ROOT/claudopilot/web-server.mjs" \
+    --port "$CLAUDOPILOT_WEB_PORT" >/dev/null 2>&1 &
+  HOST_WEB_PID=$!
+  echo "[run-in-docker] Dashboard: $WEB_URL"
+}
+stop_host_web() { [[ -n "$HOST_WEB_PID" ]] && kill "$HOST_WEB_PID" 2>/dev/null || true; }
+
+# True if a host TCP port is already accepting connections (bash /dev/tcp — no
+# external tools). Used so a busy port disables the dashboard instead of failing
+# the whole run (docker -p would otherwise abort on a bind clash).
+port_in_use() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&-; return 0; } || return 1
+}
+
 # ── Isolated mode ───────────────────────────────────────────────────────────
 # The orchestrator (run-loop.sh: scheduling, merges, the SSH key, the only pushes)
 # runs HERE on the host — trusted bash, never the agent. Each phase runs in its
@@ -44,8 +76,11 @@ if [[ "${1:-}" == "--isolated" ]]; then
   fi
   echo "[run-in-docker] Isolated mode: orchestrator on the host; agents in per-phase containers."
   echo "[run-in-docker]   Each agent gets a disposable clone + Claude auth, NO git push creds; the host pushes."
-  exec env CLAUDOPILOT_ISOLATED=1 WORKER_IMAGE="$IMAGE_TAG" REPO_ROOT="$REPO_ROOT" \
+  start_host_web
+  trap stop_host_web EXIT
+  env CLAUDOPILOT_ISOLATED=1 WORKER_IMAGE="$IMAGE_TAG" REPO_ROOT="$REPO_ROOT" \
        bash "$REPO_ROOT/claudopilot/run-loop.sh"
+  exit $?
 fi
 
 # Container runs as the `runner` user with HOME=/home/runner. All host
@@ -103,7 +138,23 @@ else
   )
 fi
 
-CMD=(bash -c "cd /work && bash claudopilot/run-loop.sh")
+# In default mode the dashboard runs INSIDE the container (node is always present
+# there) and the port is published to the host loopback below. It binds 0.0.0.0
+# *inside* the container so docker's port-forwarder can reach it; the -p mapping
+# keeps it loopback-only on the host. Skipped for --shell.
+WEB_PUBLISH=()
+LOOP_CMD="cd /work && bash claudopilot/run-loop.sh"
+if [[ "$CLAUDOPILOT_WEB" == "1" && "${1:-}" != "--shell" ]]; then
+  if port_in_use "$CLAUDOPILOT_WEB_PORT"; then
+    echo "[run-in-docker] Dashboard skipped: host port $CLAUDOPILOT_WEB_PORT is in use." >&2
+    echo "[run-in-docker]   Set CLAUDOPILOT_WEB_PORT=<n> or CLAUDOPILOT_WEB=0. The run continues." >&2
+  else
+    WEB_PUBLISH=(-p "127.0.0.1:${CLAUDOPILOT_WEB_PORT}:${CLAUDOPILOT_WEB_PORT}")
+    LOOP_CMD="cd /work && (CLAUDOPILOT_WEB_HOST=0.0.0.0 node claudopilot/web-server.mjs --port ${CLAUDOPILOT_WEB_PORT} >/tmp/claudopilot-web.log 2>&1 &) ; bash claudopilot/run-loop.sh"
+    echo "[run-in-docker] Dashboard: $WEB_URL"
+  fi
+fi
+CMD=(bash -c "$LOOP_CMD")
 if [[ "${1:-}" == "--shell" ]]; then
   CMD=(bash)
 fi
@@ -118,6 +169,7 @@ docker run --rm -it --init \
   --ipc=host \
   --shm-size=2g \
   -v "$REPO_ROOT:/work" \
+  "${WEB_PUBLISH[@]}" \
   "${CLAUDE_MOUNT[@]}" \
   "${GIT_MOUNT[@]}" \
   "${SSH_MOUNT[@]}" \

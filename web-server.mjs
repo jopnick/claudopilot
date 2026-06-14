@@ -29,6 +29,10 @@ const valOf = (f) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 const PORT = Number(valOf("--port") || process.env.PORT || 4317);
+// Bind address. Defaults to loopback. The Docker default-mode launcher sets
+// 0.0.0.0 so docker's published port can reach it (still loopback-only on the host
+// via -p 127.0.0.1:PORT:PORT).
+const HOST = valOf("--host") || process.env.CLAUDOPILOT_WEB_HOST || "127.0.0.1";
 const MANIFEST = valOf("--manifest") || process.env.MANIFEST; // else progress.mjs's default
 
 // ── /api/progress ─ shell out to progress.mjs so the web view matches the CLI ─
@@ -155,9 +159,10 @@ const server = createServer(async (req, res) => {
   res.writeHead(404, { "content-type": "text/plain" }).end("not found");
 });
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, HOST, () => {
+  const shown = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
   const where = MANIFEST ? ` (manifest: ${MANIFEST})` : "";
-  process.stdout.write(`claudopilot dashboard → http://127.0.0.1:${PORT}${where}\n`);
+  process.stdout.write(`claudopilot dashboard → http://${shown}:${PORT}${where}\n`);
   process.stdout.write(`  serving run artifacts under ${REPO_ROOT}\n  Ctrl-C to stop.\n`);
 });
 server.on("error", (e) => {
