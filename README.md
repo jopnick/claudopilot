@@ -75,6 +75,9 @@ claudopilot/
 ├── README.md                # this file
 ├── run-loop.sh              # the loop driver (one process, one tick at a time)
 ├── run-in-docker.sh         # builds the image and runs the loop with mounts
+├── progress.mjs             # read-only progress model (text / --json / --follow)
+├── web-server.mjs           # localhost dashboard server (claudopilot web)
+├── web/                     # lit-html dashboard (agents + live thought streams)
 ├── Dockerfile               # Playwright + pnpm + git + gh + Claude Code
 └── prompts/
     ├── worker.md            # spawned every tick to do the actual work
@@ -96,7 +99,19 @@ claudopilot init                # vendors the engine into ./claudopilot/ and
 claudopilot run                 # build the image + run the loop (--isolated for
                                 # per-phase containers; --shell to drop into bash)
 claudopilot progress            # read-only view of an in-flight run
+claudopilot web                 # browser dashboard at http://127.0.0.1:4317
 ```
+
+### Web dashboard
+
+`claudopilot web` starts a tiny **localhost-only**, read-only server (default port
+`4317`, override with `--port`) and serves a [lit-html](https://lit.dev/docs/libraries/standalone-templates/)
+single-page app. It polls the same model as `progress.mjs`, lists every phase/agent
+with live state, slice progress, and current activity, and — when you click an agent —
+streams that worker's **thought stream** (assistant text, thinking, tool calls and
+results) by tailing its rendered transcript, auto-scrolling as new output lands. No
+build step and no network: lit-html is vendored. Run it from the repo root alongside
+a live `claudopilot run`.
 
 `init` writes the engine scripts under `./claudopilot/` (so the Docker layout
 below resolves) and leaves `claudopilot.config.sh`, the roadmap, and

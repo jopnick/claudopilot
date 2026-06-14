@@ -36,6 +36,12 @@ const ENGINE_FILES = [
   "render-stream.mjs",
   "progress.mjs",
   "progress.sh",
+  "web-server.mjs",
+  "web/index.html",
+  "web/app.mjs",
+  "web/transcript.mjs",
+  "web/styles.css",
+  "web/vendor/lit-html.js",
   "Dockerfile",
   "prompts/worker.md",
   "prompts/supervisor.md",
@@ -106,20 +112,22 @@ function requireVendored(relScript) {
   return p;
 }
 
-function execBash(scriptPath, passthrough) {
-  const r = spawnSync("bash", [scriptPath, ...passthrough], {
-    stdio: "inherit",
-  });
+function execInherit(command, commandArgs) {
+  const r = spawnSync(command, commandArgs, { stdio: "inherit" });
   if (r.error) die(r.error.message);
   process.exit(r.status ?? 1);
 }
 
 function cmdRun(args) {
-  execBash(requireVendored("run-in-docker.sh"), args);
+  execInherit("bash", [requireVendored("run-in-docker.sh"), ...args]);
 }
 
 function cmdProgress(args) {
-  execBash(requireVendored("progress.sh"), args);
+  execInherit("bash", [requireVendored("progress.sh"), ...args]);
+}
+
+function cmdWeb(args) {
+  execInherit(process.execPath, [requireVendored("web-server.mjs"), ...args]);
 }
 
 const HELP = `claudopilot v${pkg.version} — autonomous execution loop for Claude Code
@@ -128,6 +136,7 @@ Usage:
   claudopilot init [--force]          Scaffold this repo (vendor engine + config stubs)
   claudopilot run [--isolated|--shell]  Build the image and run the loop
   claudopilot progress [args…]        Read-only progress view of a run
+  claudopilot web [--port N]          Local web dashboard (agents + thought streams)
   claudopilot --version | --help
 
 Docs: ${pkg.homepage}`;
@@ -141,6 +150,8 @@ function main() {
       return cmdRun(rest);
     case "progress":
       return cmdProgress(rest);
+    case "web":
+      return cmdWeb(rest);
     case "-v":
     case "--version":
       return log(pkg.version);

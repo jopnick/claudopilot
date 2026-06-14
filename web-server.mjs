@@ -1,0 +1,169 @@
+#!/usr/bin/env node
+//
+// claudopilot/web-server.mjs — tiny localhost web dashboard for a run-loop.sh run.
+//
+// Read-only. Serves a lit-html single-page app and two JSON/text endpoints backed
+// by the same artifacts the CLI uses:
+//   GET /api/progress            -> `node progress.mjs --json` (the snapshot model)
+//   GET /api/transcript?id=<id>  -> that agent's rendered transcript (thought stream)
+//                                   optional &offset=<bytes> for a cheap incremental tail
+//
+// Binds to 127.0.0.1 only. Usage:
+//   node claudopilot/web-server.mjs [--port 4317] [--manifest <path>]
+//   PORT=4317 node claudopilot/web-server.mjs
+
+import { createServer } from "node:http";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { createReadStream, existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { dirname, join, resolve, extname } from "node:path";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, ".."); // mirrors progress.mjs: engine sits at <repo>/claudopilot/
+const WEB_DIR = join(HERE, "web");
+
+// ── args ────────────────────────────────────────────────────────────────────
+const argv = process.argv.slice(2);
+const valOf = (f) => {
+  const i = argv.indexOf(f);
+  return i >= 0 ? argv[i + 1] : undefined;
+};
+const PORT = Number(valOf("--port") || process.env.PORT || 4317);
+const MANIFEST = valOf("--manifest") || process.env.MANIFEST; // else progress.mjs's default
+
+// ── /api/progress ─ shell out to progress.mjs so the web view matches the CLI ─
+function getProgress() {
+  return new Promise((res) => {
+    const args = [join(HERE, "progress.mjs"), "--json"];
+    if (MANIFEST) args.push("--manifest", MANIFEST);
+    execFile(
+      process.execPath,
+      args,
+      { cwd: REPO_ROOT, maxBuffer: 32 * 1024 * 1024, env: process.env },
+      (err, stdout) => {
+        if (err && !stdout) {
+          res({ ok: false, body: JSON.stringify({ error: String(err.message || err) }) });
+        } else {
+          res({ ok: true, body: stdout });
+        }
+      },
+    );
+  });
+}
+
+// ── /api/transcript ─ the rendered "thought stream" for one agent ─────────────
+const ID_RE = /^[A-Za-z0-9._-]+$/;
+function transcriptPath(id) {
+  const clone = join(REPO_ROOT, ".claudopilot", "worktrees", id, ".claudopilot", `${id}.transcript.md`);
+  const main = join(REPO_ROOT, ".claudopilot", `${id}.transcript.md`);
+  if (existsSync(clone)) return clone;
+  if (existsSync(main)) return main;
+  return null;
+}
+
+function readTail(path, offset) {
+  const size = statSync(path).size;
+  if (offset >= size) return { size, chunk: "" }; // nothing new (or file shrank → caller resets)
+  const fd = openSync(path, "r");
+  try {
+    const len = size - offset;
+    const buf = Buffer.allocUnsafe(len);
+    readSync(fd, buf, 0, len, offset);
+    return { size, chunk: buf.toString("utf8") };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// ── static files (whitelisted; no traversal) ──────────────────────────────────
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".map": "application/json",
+};
+// public path -> file on disk
+const STATIC = {
+  "/": join(WEB_DIR, "index.html"),
+  "/index.html": join(WEB_DIR, "index.html"),
+  "/app.mjs": join(WEB_DIR, "app.mjs"),
+  "/transcript.mjs": join(WEB_DIR, "transcript.mjs"),
+  "/styles.css": join(WEB_DIR, "styles.css"),
+  "/lit-html.js": join(WEB_DIR, "vendor", "lit-html.js"),
+};
+
+function sendJson(res, code, body) {
+  res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.end(body);
+}
+
+const server = createServer(async (req, res) => {
+  let url;
+  try {
+    url = new URL(req.url, "http://127.0.0.1");
+  } catch {
+    res.writeHead(400).end("bad request");
+    return;
+  }
+  const path = url.pathname;
+
+  if (req.method !== "GET") {
+    res.writeHead(405).end("method not allowed");
+    return;
+  }
+
+  if (path === "/api/progress") {
+    const { body } = await getProgress();
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    res.end(body);
+    return;
+  }
+
+  if (path === "/api/transcript") {
+    const id = url.searchParams.get("id") || "";
+    if (!ID_RE.test(id)) {
+      sendJson(res, 400, JSON.stringify({ error: "invalid id" }));
+      return;
+    }
+    const tp = transcriptPath(id);
+    if (!tp) {
+      sendJson(res, 200, JSON.stringify({ exists: false, size: 0, chunk: "" }));
+      return;
+    }
+    const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) | 0);
+    try {
+      const { size, chunk } = readTail(tp, offset);
+      sendJson(res, 200, JSON.stringify({ exists: true, size, chunk, reset: offset > size }));
+    } catch (e) {
+      sendJson(res, 500, JSON.stringify({ error: String(e.message || e) }));
+    }
+    return;
+  }
+
+  // static
+  const file = STATIC[path];
+  if (file && existsSync(file)) {
+    res.writeHead(200, {
+      "content-type": MIME[extname(file)] || "application/octet-stream",
+      "cache-control": "no-store",
+    });
+    createReadStream(file).pipe(res);
+    return;
+  }
+
+  res.writeHead(404, { "content-type": "text/plain" }).end("not found");
+});
+
+server.listen(PORT, "127.0.0.1", () => {
+  const where = MANIFEST ? ` (manifest: ${MANIFEST})` : "";
+  process.stdout.write(`claudopilot dashboard → http://127.0.0.1:${PORT}${where}\n`);
+  process.stdout.write(`  serving run artifacts under ${REPO_ROOT}\n  Ctrl-C to stop.\n`);
+});
+server.on("error", (e) => {
+  if (e.code === "EADDRINUSE") {
+    process.stderr.write(`web-server: port ${PORT} is in use — pass --port <n> to choose another.\n`);
+    process.exit(1);
+  }
+  throw e;
+});
