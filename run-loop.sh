@@ -55,6 +55,19 @@ CLAUDOPILOT_CONFIG="${CLAUDOPILOT_CONFIG:-$REPO_ROOT/claudopilot.config.sh}"
 ROADMAP_DIR="${ROADMAP_DIR:-roadmap}"
 MANIFEST="${MANIFEST:-$REPO_ROOT/$ROADMAP_DIR/EXECUTION-MANIFEST.md}"
 RENDER_STREAM="${RENDER_STREAM:-$REPO_ROOT/claudopilot/render-stream.mjs}"
+RENDER_STREAM_OPENCODE="${RENDER_STREAM_OPENCODE:-$REPO_ROOT/claudopilot/render-stream-opencode.mjs}"
+
+# ── Agent driver seam ───────────────────────────────────────────────────────
+# Which agent CLI runs each worker:
+#   claude   (default) — Claude Code headless (`claude -p … --output-format stream-json`).
+#   opencode           — OpenCode headless (`opencode run … --format json`); model-agnostic,
+#                        so AGENT_MODEL can point at a local Ollama model (e.g.
+#                        ollama/qwen2.5-coder) for a $0/offline run, or any provider/model.
+# Everything else in the engine (scheduling, worktrees, serial merges, the DONE_ rename
+# done-signal, the dashboard) is driver-agnostic. Note: small local models are far weaker
+# at the worker contract than frontier Claude — prefer the simpler roadmaps and MAX_PARALLEL=1.
+AGENT_DRIVER="${AGENT_DRIVER:-claude}"
+AGENT_MODEL="${AGENT_MODEL:-}"   # e.g. ollama/qwen2.5-coder ; empty = the driver's default
 
 # Prompts = generic engine contract (base, ships with the engine) + optional
 # project overlay (cornerstones, paths supplied by the target repo via config).
@@ -248,11 +261,22 @@ capture_agent() {  # id, prompt
   local id="$1" prompt="$2"
   local plog="$RUNDIR/$id.log" stream="$RUNDIR/$id.stream.jsonl" transcript="$RUNDIR/$id.transcript.md"
   { echo; echo "=== [$id] ${SUPERVISOR_MODE:+supervisor }run (attempt ${SUPATT[$id]:-0}) ==="; } >>"$transcript"
-  claude -p "$prompt" \
-      --permission-mode bypassPermissions --verbose --output-format stream-json 2>>"$plog" \
-    | tee -a "$stream" \
-    | node "$RENDER_STREAM" \
-    | tee -a "$transcript" >>"$plog"
+  if [[ "$AGENT_DRIVER" == "opencode" ]]; then
+    # OpenCode headless. --dangerously-skip-permissions is the bypassPermissions
+    # equivalent (auto-approve). Its --format json events are mapped to the same
+    # transcript markers by render-stream-opencode.mjs.
+    local model_args=(); [[ -n "$AGENT_MODEL" ]] && model_args=(-m "$AGENT_MODEL")
+    opencode run "$prompt" "${model_args[@]}" --format json --dangerously-skip-permissions 2>>"$plog" \
+      | tee -a "$stream" \
+      | node "$RENDER_STREAM_OPENCODE" \
+      | tee -a "$transcript" >>"$plog"
+  else
+    claude -p "$prompt" \
+        --permission-mode bypassPermissions --verbose --output-format stream-json 2>>"$plog" \
+      | tee -a "$stream" \
+      | node "$RENDER_STREAM" \
+      | tee -a "$transcript" >>"$plog"
+  fi
 }
 
 # Set PLOG/STREAM/TRANSCRIPT for a phase. Isolated: inside the clone's .claudopilot

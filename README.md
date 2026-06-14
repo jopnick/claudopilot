@@ -606,6 +606,9 @@ All overridable in env at launch time.
 | `USAGE_THRESHOLD_PCT` | `95` | Sleep until window reset when ticks-in-window crosses this %. |
 | `DEFAULT_RATE_LIMIT_SLEEP` | `3600` (1h) | Fallback sleep duration when a rate-limit-shaped error doesn't carry a parseable retry hint. |
 | `IGNORE_LOOP_CHECKPOINTS` | `0` | When `1`, ignore `<!-- LOOP-CHECKPOINT: ... -->` blocks and proceed to the next pending phase. Real halts (dep errors, supervisor exhaustion, rate limits) still fire. |
+| **Agent driver** | | |
+| `AGENT_DRIVER` | `claude` | Which agent CLI runs each worker: `claude` (Claude Code) or `opencode` (OpenCode; model-agnostic). See [Agent drivers](#agent-drivers-claude-code-or-opencode--ollama). |
+| `AGENT_MODEL` | (driver default) | For `opencode`: the `provider/model`, e.g. `ollama/qwen2.5-coder` (local/free) or a hosted model. |
 | **Docker** | | |
 | `CLAUDOPILOT_IMAGE_TAG` | `claudopilot-runner` | Image tag + container name. Useful if you run multiple loops on one host. |
 | **Web dashboard** | | |
@@ -660,6 +663,41 @@ REPO_ROOT="$(pwd)" bash claudopilot/run-loop.sh
 
 `REPO_ROOT` is the one variable you usually need to set — it defaults
 to `/work` (the Docker mount point).
+
+## Agent drivers (Claude Code or OpenCode + Ollama)
+
+The engine is **driver-agnostic** — scheduling, worktrees, serial merges, the
+`DONE_` done-signal, and the dashboard don't care which agent CLI runs each
+worker. Two are built in, selected with `AGENT_DRIVER`:
+
+| `AGENT_DRIVER` | Runs each worker as | Notes |
+| --- | --- | --- |
+| `claude` (default) | `claude -p … --output-format stream-json` | Claude Code headless. |
+| `opencode` | `opencode run … --format json --dangerously-skip-permissions` | [OpenCode](https://opencode.ai) headless; **model-agnostic** via `AGENT_MODEL`. |
+
+With `opencode`, point `AGENT_MODEL` at any provider/model — including a **local
+Ollama model**, for a $0 / offline run:
+
+```bash
+# fully local & free: OpenCode + an Ollama model
+AGENT_DRIVER=opencode AGENT_MODEL=ollama/qwen2.5-coder \
+  REPO_ROOT="$(pwd)" MAX_PARALLEL=1 bash claudopilot/run-loop.sh
+
+# or a cheap/capable hosted model through OpenCode (configure it in OpenCode first)
+AGENT_DRIVER=opencode AGENT_MODEL=openrouter/deepseek/deepseek-chat \
+  REPO_ROOT="$(pwd)" bash claudopilot/run-loop.sh
+```
+
+OpenCode's JSON events are mapped to the same transcript markers by
+`render-stream-opencode.mjs`, so the dashboard and `progress.mjs` work unchanged.
+
+> **Honest caveat — capability, not plumbing.** The worker contract (branch,
+> implement slices, keep a real test gate green, fix failures, commit, rename
+> `DONE_`) is demanding. Frontier Claude does it reliably; **small local models
+> that fit on modest hardware (4B–9B) struggle** — frequent gate failures, loops,
+> and parked phases — and are slow. For local/Ollama runs: prefer the simplest
+> roadmaps, keep slices tiny, set `MAX_PARALLEL=1`, and lean on the supervisor +
+> `KEEP_GOING`. A cheap *hosted* model via OpenCode is the reliable middle ground.
 
 ## Encoding project rules in worker.md
 

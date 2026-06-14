@@ -34,6 +34,7 @@ const ENGINE_FILES = [
   "run-in-docker.sh",
   "worker-entry.sh",
   "render-stream.mjs",
+  "render-stream-opencode.mjs",
   "progress.mjs",
   "progress.sh",
   "web-server.mjs",
