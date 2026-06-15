@@ -79,10 +79,20 @@ claudopilot/
 ├── web-server.mjs           # localhost dashboard server (claudopilot web)
 ├── web/                     # lit-html dashboard (agents + live thought streams)
 ├── Dockerfile               # Playwright + pnpm + git + gh + Claude Code
-└── prompts/
-    ├── worker.md            # spawned every tick to do the actual work
-    └── supervisor.md        # spawned only when the worker halts on test failure
+├── prompts/
+│   ├── worker.md            # spawned every tick to do the actual work
+│   └── supervisor.md        # spawned only when the worker halts on test failure
+├── .claude-plugin/
+│   └── marketplace.json     # makes this repo a Claude Code plugin marketplace
+└── pilot/                   # the same loop as a NATIVE Claude Code plugin (no Docker)
+    ├── skills/pilot-run/    # the driver skill (main session drives the loop)
+    └── agents/              # phase-worker + phase-supervisor agent definitions
 ```
+
+> **Two ways to run.** The headline above is the **bash/Docker engine** (primary;
+> built for unattended/CI runs, hard container isolation, and local-model runs).
+> If you'd rather drive it hands-on from inside a Claude Code session with zero
+> setup, there's a native plugin — see [Native Claude Code plugin](#native-claude-code-plugin-no-docker).
 
 ## Install
 
@@ -698,6 +708,54 @@ OpenCode's JSON events are mapped to the same transcript markers by
 > and parked phases — and are slow. For local/Ollama runs: prefer the simplest
 > roadmaps, keep slices tiny, set `MAX_PARALLEL=1`, and lean on the supervisor +
 > `KEEP_GOING`. A cheap *hosted* model via OpenCode is the reliable middle ground.
+
+## Native Claude Code plugin (no Docker)
+
+The engine above shells out to `claude -p` subprocesses and wraps them in Docker,
+a stream renderer, and a dashboard — all of which exist only because `claude -p`
+is a dumb subprocess. If you're driving the loop **hands-on from inside a Claude
+Code session**, none of that scaffolding is needed: the session itself can be the
+driver, and phases can run as **background agents in git worktrees**. That's what
+the bundled `pilot` plugin does.
+
+This repo doubles as a Claude Code **plugin marketplace**. From any session:
+
+```
+/plugin marketplace add jopnick/claudopilot      # or a local path to this repo
+/plugin install pilot@claudopilot
+```
+
+Then, from the root of the repo you want to drive:
+
+```
+/pilot-run                                # schedule the manifest; defaults to --max-parallel 3
+/pilot-run --max-parallel 4 --keep-going  # fully autonomous: park red phases, keep going
+/pilot-run --only phase-04 --push         # one initiative from a shared manifest; push after merge
+```
+
+The main session becomes the driver: it reads `roadmap/EXECUTION-MANIFEST.md`,
+launches each eligible phase as a background **`pilot:phase-worker`** agent in its
+own worktree, merges finished `auto/<id>` branches serially, owns the manifest,
+and sends in a **`pilot:phase-supervisor`** when a gate stays red. If there's no
+manifest yet, it offers to author one from your goal first.
+
+It is **contract-compatible** with the bash engine — same manifest grammar, same
+`auto/<id>` branches, same `DONE_`-rename done-signal, same driver-owns-merges
+invariant — so either driver can resume what the other left off (just never run
+both against one manifest at once).
+
+| | Native plugin | Bash/Docker engine (primary) |
+| --- | --- | --- |
+| Runs in | an interactive Claude Code session | a container / host shell, unattended |
+| Setup | `/plugin install`, nothing else | Node + Docker + `claudopilot init` |
+| Worker isolation | git worktree per phase | worktree, or a container per phase (`--isolated`) |
+| Progress UI | background-task view + `/workflows` | `claudopilot web` + `progress.sh` |
+| Rate limits | handled by the harness | proactive window + reactive backoff |
+| Local / $0 models | uses your Claude Code session | yes, via `AGENT_DRIVER=opencode` + Ollama |
+| Best for | day-to-day, hands-on runs | CI, fully-unattended runs, hard isolation |
+
+Full contract and flags are in [`pilot/README.md`](pilot/README.md) and
+[`pilot/skills/pilot-run/SKILL.md`](pilot/skills/pilot-run/SKILL.md).
 
 ## Encoding project rules in worker.md
 
