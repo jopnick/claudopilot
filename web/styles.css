@@ -63,8 +63,16 @@ main { display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
 .card .title { color: var(--dim); font-size: 13px; margin: 2px 0 0 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .meta { color: var(--dim); font-size: 12px; margin: 4px 0 0 16px; font-family: var(--mono); }
 .card .deps { color: var(--dim); font-size: 11px; margin: 2px 0 0 16px; }
-.card .now { color: var(--running); font-size: 12px; margin: 4px 0 0 16px; font-family: var(--mono);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .now { margin-left: 16px; }
+/* "what Claude is doing now": fixed state label, truncating detail, pinned timer */
+.now { display: flex; align-items: baseline; gap: 8px; font-size: 12px; margin-top: 4px;
+  font-family: var(--mono); min-width: 0; }
+.now .now-label { color: var(--running); font-weight: 600; flex: none; }
+.now .now-detail { color: var(--dim); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0; }
+.now .now-elapsed { color: var(--dim); flex: none; margin-left: auto; padding-left: 8px;
+  font-variant-numeric: tabular-nums; }
+.dhead-now { margin-top: 6px; }
 
 .state-merged  { color: var(--merged); }  .dot.merged  { background: var(--merged); }
 .state-running { color: var(--running); } .dot.running { background: var(--running); }
