@@ -72,6 +72,9 @@ main { display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
   white-space: nowrap; min-width: 0; }
 .now .now-elapsed { color: var(--dim); flex: none; margin-left: auto; padding-left: 8px;
   font-variant-numeric: tabular-nums; }
+/* live token count, pinned just right of the timer — proof of forward progress */
+.now .now-tokens { color: var(--running); flex: none; padding-left: 8px;
+  font-variant-numeric: tabular-nums; opacity: 0.85; }
 .dhead-now { margin-top: 6px; }
 
 .state-merged  { color: var(--merged); }  .dot.merged  { background: var(--merged); }

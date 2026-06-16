@@ -20,6 +20,13 @@ function fmtDur(ms) {
 }
 // `since` is the stream file's mtime (ms); elapsed ticks live, client-side.
 const fmtElapsed = (since) => (since ? fmtDur(Date.now() - since) : "");
+// Compact token count: 920 · 12.3k · 1.2M. Mirrors fmtTokens in progress.mjs.
+function fmtTokens(n) {
+  if (n == null) return "";
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
 
 // ── state ─────────────────────────────────────────────────────────────────
 const state = {
@@ -143,6 +150,9 @@ function agentCard(p, i) {
             <span class="now-label">${p.step.label}</span>
             ${p.step.detail ? html`<span class="now-detail">${p.step.detail}</span>` : nothing}
             <span class="now-elapsed">${fmtElapsed(p.step.since)}</span>
+            ${p.step.tokens != null
+              ? html`<span class="now-tokens">${fmtTokens(p.step.tokens)} tok</span>`
+              : nothing}
           </div>`
         : p.state === "running" && p.activity
           ? html`<div class="now"><span class="now-detail">${p.activity}</span></div>`
@@ -221,6 +231,9 @@ function renderDetail() {
               <span class="now-label">${p.step.label}</span>
               ${p.step.detail ? html`<span class="now-detail">${p.step.detail}</span>` : nothing}
               <span class="now-elapsed">${fmtElapsed(p.step.since)}</span>
+            ${p.step.tokens != null
+              ? html`<span class="now-tokens">${fmtTokens(p.step.tokens)} tok</span>`
+              : nothing}
             </div>`
           : nothing}
         ${p

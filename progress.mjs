@@ -182,7 +182,48 @@ function toolHint(tu) {
   );
 }
 
+// Cumulative output tokens generated across the whole run — a steadily-climbing
+// number that proves the model is still working even while one turn sits silent.
+// We sum `usage.output_tokens` from every `assistant` event (each agentic round is
+// its own API call with its own usage); the `result` event is skipped so its
+// session summary doesn't double-count. Reads the full file (not just the tail) so
+// the total stays monotonic instead of shrinking as old events scroll out of view.
+const TOKEN_SCAN_MAX_BYTES = 64 * 1024 * 1024; // pathological-file guard
+function sumOutputTokens(path) {
+  let text;
+  try {
+    if (statSync(path).size > TOKEN_SCAN_MAX_BYTES) return null;
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  let total = 0;
+  let seen = false;
+  for (const line of text.split("\n")) {
+    if (!line.includes('"output_tokens"')) continue; // cheap pre-filter: skip non-usage lines
+    try {
+      const ev = JSON.parse(line);
+      const u = ev.type === "assistant" ? ev.message?.usage : null;
+      if (u && typeof u.output_tokens === "number") {
+        total += u.output_tokens;
+        seen = true;
+      }
+    } catch {
+      /* skip partial / non-JSON lines */
+    }
+  }
+  return seen ? total : null;
+}
+
 function deriveStep(id) {
+  const base = deriveStepBase(id);
+  if (!base) return null;
+  const path = streamPath(id);
+  base.tokens = path ? sumOutputTokens(path) : null;
+  return base;
+}
+
+function deriveStepBase(id) {
   const path = streamPath(id);
   if (!path) return null;
   let since, text, partialHead;
@@ -383,6 +424,14 @@ function fmtDur(ms) {
   return `${h}h${String(m % 60).padStart(2, "0")}m`;
 }
 
+// Compact token count: 920 · 12.3k · 1.2M. Mirrors fmtTokens in web/app.mjs.
+function fmtTokens(n) {
+  if (n == null) return "";
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 function render(model) {
   if (model.error) return model.error;
   const s = model.summary;
@@ -411,7 +460,8 @@ function render(model) {
       if (p.step) {
         const el = fmtDur(Date.now() - p.step.since);
         const detail = p.step.detail ? `: ${p.step.detail}` : "";
-        out.push(`      ${C.cyn}now${C.r} ${p.step.label}${detail} ${C.dim}(${el})${C.r}`);
+        const tok = p.step.tokens != null ? ` · ${fmtTokens(p.step.tokens)} tok` : "";
+        out.push(`      ${C.cyn}now${C.r} ${p.step.label}${detail} ${C.dim}(${el}${tok})${C.r}`);
       } else if (p.activity) {
         out.push(`      ${C.cyn}now${C.r} ${p.activity}`);
       }
