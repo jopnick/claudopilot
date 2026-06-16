@@ -36,3 +36,13 @@ export WORKER_PROJECT_PROMPT="$REPO_ROOT/claudopilot/prompts/worker.project.md"
 # Set to 1 for a fully-autonomous run: park (don't merge) phases that can't go
 # green and keep going with independent work instead of halting.
 # export KEEP_GOING=0
+
+# ── Resilience & recovery ───────────────────────────────────────────────────
+# Relaunch (don't park) a worker that died on a transient server-side API error
+# (HTTP 500/502/503, 529 overloaded, dropped socket), bounded per phase.
+# export RETRY_TRANSIENT_API=1
+# export TRANSIENT_API_MAX_RETRIES=10
+# Kill + relaunch a running worker whose transcript hasn't grown for this many
+# seconds (a hung API stream or gate command). 0 = off. Set ABOVE your gate's
+# worst-case runtime so a slow-but-healthy test run is never killed.
+# export STUCK_TIMEOUT=0

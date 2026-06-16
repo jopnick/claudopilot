@@ -126,12 +126,27 @@ DEFAULT_RATE_LIMIT_SLEEP="${DEFAULT_RATE_LIMIT_SLEEP:-3600}"
 
 IGNORE_LOOP_CHECKPOINTS="${IGNORE_LOOP_CHECKPOINTS:-0}"
 
+# Reactive retry for TRANSIENT, server-side API failures (HTTP 500/502/503, 529
+# overloaded, dropped sockets) — distinct from rate limits (handled separately
+# with a parsed cooldown). A worker that died on one of these is not at fault and
+# the condition clears on its own, so the driver re-pends and relaunches it, up to
+# a per-phase cap, instead of parking it. Set RETRY_TRANSIENT_API=0 to disable.
+RETRY_TRANSIENT_API="${RETRY_TRANSIENT_API:-1}"
+TRANSIENT_API_MAX_RETRIES="${TRANSIENT_API_MAX_RETRIES:-10}"
+
+# Stuck-worker watchdog: if a RUNNING worker's transcript shows no new bytes for
+# STUCK_TIMEOUT seconds, treat it as hung (a wedged API stream, or a gate command
+# that never returns), kill it, and relaunch. 0 disables (default — a long gate
+# can legitimately be quiet; opt in per-project once you know your gate's ceiling).
+STUCK_TIMEOUT="${STUCK_TIMEOUT:-0}"
+
 RUNDIR="$REPO_ROOT/.claudopilot"
 WORKTREES="$RUNDIR/worktrees"
+CONTROL_DIR="$RUNDIR/control"   # UI/CLI drops action files here; the driver applies them
 LOG_FILE="${LOG_FILE:-$REPO_ROOT/.claudopilot.log}"
 
 cd "$REPO_ROOT"
-mkdir -p "$WORKTREES"
+mkdir -p "$WORKTREES" "$CONTROL_DIR"
 : > "$LOG_FILE"
 
 log() { echo "[loop] $*" | tee -a "$LOG_FILE"; }
@@ -210,6 +225,7 @@ all_merged() {  # true ONLY if there is >=1 order entry and every one is merged
 
 # ── Worker lifecycle (background) ─────────────────────────────────────────
 declare -A PID WT PLOG SUPATT STREAM TRANSCRIPT
+declare -A APIRETRY STUCK_SIZE STUCK_SINCE   # transient-retry counts + watchdog progress tracking
 FAILED=0; BLOCKED=0; HALT_CODE=""
 
 prepare_worktree() {  # id -> branch + (worktree | isolated clone)
@@ -340,6 +356,36 @@ is_rate_limited() {  # check a per-phase log tail
     | grep -qiE "rate.?limit|usage limit|429|too many requests|please (retry|wait)|exceeded.*(quota|limit)"
 }
 
+# A transient, server-side API failure the agent surfaces verbatim (e.g.
+# "API Error: 500 Internal server error", "...socket connection was closed",
+# 502/503/529 overloaded). Unlike a gate failure these are not the worker's fault
+# and clear on their own, so we relaunch rather than park. Checked AFTER
+# is_rate_limited so a 429 still takes the rate-limit cooldown path.
+is_transient_api_error() {  # check a per-phase log tail
+  [[ "$RETRY_TRANSIENT_API" == "1" ]] || return 1
+  tail -120 "$1" 2>/dev/null \
+    | grep -qiE "api error|socket connection was closed|5[0-9][0-9] internal server error|overloaded|bad gateway|service unavailable"
+}
+
+# Re-pending a phase that hit a transient API error, bounded by a per-phase cap so
+# a sustained outage eventually parks it instead of looping forever. Returns 0 if a
+# retry was scheduled, 1 if the cap is exhausted (caller should park/halt).
+retry_transient_api() {  # id
+  local id="$1"; : "${APIRETRY[$id]:=0}"
+  (( APIRETRY[$id] >= TRANSIENT_API_MAX_RETRIES )) && return 1
+  APIRETRY[$id]=$(( APIRETRY[$id] + 1 ))
+  log "  [$id] transient API error — relaunching (retry ${APIRETRY[$id]}/$TRANSIENT_API_MAX_RETRIES)."
+  set_state "$id" pending; return 0
+}
+
+# Recursively TERM a worker process and its descendants (the subshell plus the
+# claude/node/tee pipeline), so a poke/watchdog kill actually stops the agent.
+kill_tree() {  # pid
+  local p="$1" c
+  for c in $(pgrep -P "$p" 2>/dev/null); do kill_tree "$c"; done
+  kill -TERM "$p" 2>/dev/null || true
+}
+
 cleanup_worktree() {
   local id="$1" branch="auto/$1" wt="${WT[$id]:-}"
   if [[ "$CLAUDOPILOT_ISOLATED" == "1" ]]; then
@@ -415,6 +461,9 @@ supervise() {  # id, code
     log "  [$id] rate-limit-shaped; relaunch after cooldown."
     cool_down "$plog"; set_state "$id" pending; forget "$id"; return
   fi
+  # A transient API error (not a gate failure) left no DONE_ — relaunch the worker
+  # without spending a supervisor attempt; only fall through once the cap is hit.
+  if is_transient_api_error "$plog" && retry_transient_api "$id"; then forget "$id"; return; fi
   if (( ${SUPATT[$id]} >= MAX_SUPERVISOR_ATTEMPTS_PER_PHASE )); then
     park_or_halt "$id" "$code" "supervisor exhausted (no DONE_ doc)"; forget "$id"; return
   fi
@@ -483,6 +532,7 @@ handle_exit() {  # id, code
         log "  [$id] rate-limit-shaped exit; relaunch after cooldown."
         cool_down "$plog"; set_state "$id" pending; forget "$id"; return
       fi
+      if is_transient_api_error "$plog" && retry_transient_api "$id"; then forget "$id"; return; fi
       park_or_halt "$id" "$code" "worker exited $code"; forget "$id" ;;
   esac
 }
@@ -512,6 +562,62 @@ finish_keep_going() {  # mark stranded pendings [blocked] and log a summary
   [[ -n "$blist" ]] && log "  Blocked (review parked auto/<id> branches where a build started): ${blist}"
 }
 
+# Kill a running worker and re-pend it for a clean relaunch (no supervisor spend).
+# Reaps the subshell so it doesn't linger as a zombie.
+poke_worker() {  # id, reason
+  local id="$1" reason="${2:-poke}"
+  [[ -n "${PID[$id]:-}" ]] || { log "  [$id] $reason ignored — not running."; return 1; }
+  log "  [$id] $reason — killing + relaunching worker."
+  kill_tree "${PID[$id]}"; wait "${PID[$id]}" 2>/dev/null
+  unset 'STUCK_SIZE[$id]' 'STUCK_SINCE[$id]'
+  set_state "$id" pending; forget "$id"
+}
+
+# Watchdog: relaunch any running worker whose transcript has not grown for
+# STUCK_TIMEOUT seconds. Progress = transcript byte growth (the agent writes there
+# live); no growth for the window => wedged stream or a hung gate command.
+check_stuck() {
+  (( STUCK_TIMEOUT > 0 )) || return 0
+  local now id tp sz; now=$(date +%s)
+  for id in "${!PID[@]}"; do
+    tp="${TRANSCRIPT[$id]:-}"; [[ -f "$tp" ]] || continue
+    sz=$(stat -c %s "$tp" 2>/dev/null || echo 0)
+    if [[ "${STUCK_SIZE[$id]:-x}" != "$sz" ]]; then
+      STUCK_SIZE[$id]="$sz"; STUCK_SINCE[$id]="$now"; continue
+    fi
+    if (( now - ${STUCK_SINCE[$id]:-$now} >= STUCK_TIMEOUT )); then
+      poke_worker "$id" "STUCK: no transcript progress for ${STUCK_TIMEOUT}s"
+    fi
+  done
+}
+
+# Control seam: the dashboard (or a human) drops a one-line file in $CONTROL_DIR to
+# request an action; the DRIVER applies it on its next pass — the web server never
+# touches process or manifest state itself (the driver owns both). Filenames:
+#   <id>.poke   — kill a running worker and relaunch it (a hung phase)
+#   <id>.retry  — re-pend a [blocked] phase so it relaunches
+# Phase ids are kebab-case (no dots), so the trailing .action parses unambiguously.
+process_control() {
+  local f base action id st
+  shopt -s nullglob
+  for f in "$CONTROL_DIR"/*; do
+    base=$(basename "$f"); action="${base##*.}"; id="${base%.*}"
+    rm -f "$f"
+    case "$action" in
+      poke) poke_worker "$id" "CONTROL poke" ;;
+      retry)
+        st=$(order_lines | awk -F'\t' -v p="$id" '$2==p{print $1}')
+        if [[ "$st" == "blocked" ]]; then
+          log "  [$id] CONTROL retry — [blocked] -> [pending]."; APIRETRY[$id]=0; set_state "$id" pending
+        else
+          log "  [$id] CONTROL retry ignored — state is '${st:-unknown}', not blocked."
+        fi ;;
+      *) log "  CONTROL: unknown action '$action' (file '$base') — ignored." ;;
+    esac
+  done
+  shopt -u nullglob
+}
+
 # ── Scheduler ─────────────────────────────────────────────────────────────
 window_start=$(date +%s); ticks_in_window=0; iter=0
 
@@ -537,6 +643,10 @@ while (( iter < MAX_ITER )); do
       handle_exit "$id" "$code"
     fi
   done
+
+  # Apply any UI/CLI control requests, then watchdog the still-running workers.
+  process_control
+  check_stuck
 
   # Manifest checkpoint marker (policy pause) — bypassed by IGNORE_LOOP_CHECKPOINTS or KEEP_GOING.
   if [[ "$IGNORE_LOOP_CHECKPOINTS" != "1" && "$KEEP_GOING" != "1" ]] && grep -qE '^<!--\s*LOOP-CHECKPOINT:' "$MANIFEST"; then
