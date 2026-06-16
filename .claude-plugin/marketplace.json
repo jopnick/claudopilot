@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claudopilot",
+  "description": "Claudopilot as a native Claude Code plugin — the dependency-graph roadmap runner, with the main session as the driver and phase work fanned out to background agents in git worktrees. No Docker, no separate CLI.",
+  "owner": {
+    "name": "Jamie Murray"
+  },
+  "plugins": [
+    {
+      "name": "pilot",
+      "description": "Native claudopilot: feed it a dependency-annotated roadmap and the main Claude session drives every eligible phase concurrently — each a background phase-worker agent in its own git worktree — merging green branches serially, owning the manifest, escalating red gates to a phase-supervisor. Project-agnostic.",
+      "category": "workflow",
+      "source": "./pilot"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "pilot",
+  "displayName": "Claudopilot (native)",
+  "description": "Native claudopilot: dependency-graph roadmap runner. The main session drives background phase-worker agents in git worktrees, merges serially, owns the manifest, and escalates red gates to a phase-supervisor. Project-agnostic — gate command and conventions are resolved from the repo it runs in.",
+  "version": "1.0.0",
+  "author": { "name": "Jamie Murray" },
+  "homepage": "https://github.com/jopnick/claudopilot",
+  "license": "MIT",
+  "keywords": ["claude-code", "agent", "orchestrator", "autonomous", "roadmap", "worktree", "codegen"]
+}
