@@ -126,6 +126,18 @@ function agentCard(p, i) {
         : nothing}
       ${p.deps && p.deps.length ? html`<div class="deps">deps: ${p.deps.join(", ")}</div>` : nothing}
       ${p.state === "running" && p.activity ? html`<div class="now">› ${p.activity}</div>` : nothing}
+      ${p.state === "running" || p.state === "blocked"
+        ? html`<div class="actions">
+            ${p.state === "running"
+              ? html`<button class="act" title="Kill this worker and relaunch it (for a hung phase)"
+                  @click=${(e) => act(e, p.id, "poke")}>poke</button>`
+              : nothing}
+            ${p.state === "blocked"
+              ? html`<button class="act" title="Re-queue this parked phase so the driver retries it"
+                  @click=${(e) => act(e, p.id, "retry")}>retry</button>`
+              : nothing}
+          </div>`
+        : nothing}
     </div>
   `;
 }
@@ -241,6 +253,21 @@ $detail.addEventListener("scroll", () => {
 });
 
 // ── actions ─────────────────────────────────────────────────────────────────
+// Request a driver action (poke a hung worker / retry a blocked phase). The
+// server only drops a control file; run-loop.sh applies it on its next pass.
+async function postControl(id, action) {
+  try {
+    await fetch(`/api/control?id=${encodeURIComponent(id)}&action=${action}`, { method: "POST" });
+  } catch {
+    /* transient; the button can be pressed again */
+  }
+}
+function act(e, id, action) {
+  e.stopPropagation(); // don't also select the card
+  e.target.disabled = true; // debounce until the next poll re-renders
+  postControl(id, action);
+}
+
 function selectAgent(id) {
   state.selectedId = id;
   state.t = { id, raw: "", offset: 0, exists: false };
