@@ -15,7 +15,7 @@
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createReadStream, existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { createReadStream, existsSync, statSync, openSync, readSync, closeSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, extname } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -111,6 +111,28 @@ const server = createServer(async (req, res) => {
     return;
   }
   const path = url.pathname;
+
+  // ── /api/control ─ request a driver action (POST). The driver owns workers and
+  // the manifest, so we only DROP a control file; run-loop.sh applies it next pass.
+  //   POST /api/control?id=<phase>&action=poke   — kill+relaunch a hung running worker
+  //   POST /api/control?id=<phase>&action=retry  — re-pend a [blocked] phase
+  if (req.method === "POST" && path === "/api/control") {
+    const id = url.searchParams.get("id") || "";
+    const action = url.searchParams.get("action") || "";
+    if (!ID_RE.test(id) || !["poke", "retry"].includes(action)) {
+      sendJson(res, 400, JSON.stringify({ error: "invalid id or action" }));
+      return;
+    }
+    try {
+      const dir = join(REPO_ROOT, ".claudopilot", "control");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${id}.${action}`), "");
+      sendJson(res, 200, JSON.stringify({ ok: true, id, action }));
+    } catch (e) {
+      sendJson(res, 500, JSON.stringify({ error: String(e.message || e) }));
+    }
+    return;
+  }
 
   if (req.method !== "GET") {
     res.writeHead(405).end("method not allowed");

@@ -616,6 +616,10 @@ All overridable in env at launch time.
 | `USAGE_THRESHOLD_PCT` | `95` | Sleep until window reset when ticks-in-window crosses this %. |
 | `DEFAULT_RATE_LIMIT_SLEEP` | `3600` (1h) | Fallback sleep duration when a rate-limit-shaped error doesn't carry a parseable retry hint. |
 | `IGNORE_LOOP_CHECKPOINTS` | `0` | When `1`, ignore `<!-- LOOP-CHECKPOINT: ... -->` blocks and proceed to the next pending phase. Real halts (dep errors, supervisor exhaustion, rate limits) still fire. |
+| **Resilience & recovery** | | |
+| `RETRY_TRANSIENT_API` | `1` | Relaunch (don't park) a worker that died on a transient server-side API error — HTTP 500/502/503, 529 overloaded, dropped socket — distinct from a rate limit. Set `0` to park them instead. |
+| `TRANSIENT_API_MAX_RETRIES` | `10` | Per-phase cap on transient-API relaunches before the phase is parked/halted, so a sustained outage can't loop forever. |
+| `STUCK_TIMEOUT` | `0` (off) | Seconds with no transcript growth before a running worker is treated as hung, killed, and relaunched. `0` disables (a long gate can be legitimately quiet — set above your gate's worst-case runtime). |
 | **Agent driver** | | |
 | `AGENT_DRIVER` | `claude` | Which agent CLI runs each worker: `claude` (Claude Code) or `opencode` (OpenCode; model-agnostic). See [Agent drivers](#agent-drivers-claude-code-or-opencode--ollama). |
 | `AGENT_MODEL` | (driver default) | For `opencode`: the `provider/model`, e.g. `ollama/qwen2.5-coder` (local/free) or a hosted model. |
@@ -638,6 +642,32 @@ All overridable in env at launch time.
 | `6` | Phase still pending after the agent ran — likely a crash or silent halt. Inspect the manifest + agent stdout. |
 | `7` | Hit `MAX_ITER` without completion. Bump the ceiling or investigate. |
 | `8` | `KEEP_GOING` run finished with one or more phases `[blocked]` (parked branches left for review). Not a crash — flip a `[blocked]` entry back to `[pending]` and re-run to retry. |
+
+## Recovering stuck or parked phases
+
+Three layers keep a long unattended run moving without a human babysitting it:
+
+- **Transient API errors auto-retry.** When a worker dies on a server-side API
+  failure (HTTP 500/502/503, 529 overloaded, a dropped socket) rather than a gate
+  failure, the driver re-pends and relaunches it — up to `TRANSIENT_API_MAX_RETRIES`
+  per phase — instead of parking it. This is separate from the rate-limit path
+  (429s still take the parsed cooldown). Disable with `RETRY_TRANSIENT_API=0`.
+- **Stuck-worker watchdog.** Set `STUCK_TIMEOUT` (seconds) and any running worker
+  whose transcript stops growing for that long is killed and relaunched — for a
+  wedged API stream or a hung gate command. Off by default so a legitimately-quiet
+  long gate isn't killed; set it above your gate's worst-case runtime.
+- **Dashboard controls / control seam.** The dashboard shows a **poke** button on
+  a running phase (kill + relaunch a hung worker) and a **retry** button on a
+  `[blocked]` phase (re-queue a parked one). These post to `POST /api/control`,
+  which only drops a file in `.claudopilot/control/` — the driver applies it on its
+  next pass, so it stays the sole actor on workers and the manifest. The same seam
+  works from a script or another container:
+
+  ```bash
+  # poke a hung running worker, or retry a parked [blocked] phase
+  echo > .claudopilot/control/<phase-id>.poke
+  echo > .claudopilot/control/<phase-id>.retry
+  ```
 
 ## Rate-limit handling
 
