@@ -1,13 +1,12 @@
 // claudopilot dashboard — lit-html SPA.
-// Polls /api/progress for the run model and /api/transcript?id=… for the selected
-// agent's thought stream (incrementally, with auto-scroll).
+// Subscribes to /api/stream (SSE) for snapshot/progress/transcript deltas and
+// re-renders on each push. No client-side polling.
 
 import { html, render, nothing } from "/lit-html.js";
 import { parseTranscript } from "/transcript.mjs";
+import { EV, streamUrl } from "/events.mjs";
 
-const POLL_MS = 3000;
-const STALE_MS = 10000;
-const TICK_MS = 1000; // refresh the "time on step" timers between polls
+const TICK_MS = 1000; // refresh the "time on step" timers between pushes
 
 // Compact elapsed: 9s · 4m12s · 1h03m. Mirrors fmtDur in progress.mjs.
 function fmtDur(ms) {
@@ -30,10 +29,10 @@ function fmtTokens(n) {
 
 // ── state ─────────────────────────────────────────────────────────────────
 const state = {
-  model: null, // last /api/progress payload
+  model: null, // last server-pushed progress snapshot
   error: null,
   selectedId: null,
-  lastOk: 0, // ts of last successful progress fetch
+  connected: false, // EventSource lifecycle: true between onopen and onerror
   // transcript accumulator for the selected agent
   t: { id: null, raw: "", offset: 0, exists: false },
   autoFollow: true,
@@ -43,46 +42,19 @@ const $header = document.getElementById("header");
 const $agents = document.getElementById("agents");
 const $detail = document.getElementById("detail");
 
-// ── data fetching ───────────────────────────────────────────────────────────
-async function fetchProgress() {
-  try {
-    const r = await fetch("/api/progress", { cache: "no-store" });
-    const j = await r.json();
-    if (j.error) {
-      state.error = j.error;
-    } else {
-      state.model = j;
-      state.error = null;
-      state.lastOk = Date.now();
-    }
-  } catch (e) {
-    state.error = String(e);
+// ── live subscription ─────────────────────────────────────────────────────
+// One EventSource per page; reopened when the selected agent changes (so the
+// server tails the new transcript). Event handlers are wired in slice 03.2.
+let es = null;
+function unsubscribe() {
+  if (es) {
+    es.close();
+    es = null;
   }
 }
-
-async function fetchTranscript() {
-  const id = state.selectedId;
-  if (!id) return;
-  if (state.t.id !== id) state.t = { id, raw: "", offset: 0, exists: false };
-  try {
-    const r = await fetch(`/api/transcript?id=${encodeURIComponent(id)}&offset=${state.t.offset}`, {
-      cache: "no-store",
-    });
-    const j = await r.json();
-    if (state.selectedId !== id) return; // selection changed mid-flight
-    if (j.reset) {
-      state.t = { id, raw: "", offset: 0, exists: false };
-    }
-    state.t.exists = j.exists;
-    if (j.chunk) {
-      state.t.raw += j.chunk;
-      state.t.offset = j.size;
-    } else if (typeof j.size === "number") {
-      state.t.offset = j.size;
-    }
-  } catch {
-    /* leave existing transcript in place */
-  }
+function subscribe(id) {
+  unsubscribe();
+  es = new EventSource(streamUrl(id));
 }
 
 // ── views ─────────────────────────────────────────────────────────────────
@@ -106,9 +78,9 @@ function summaryBar(m) {
 }
 
 function connStatus() {
-  const stale = Date.now() - state.lastOk > STALE_MS;
-  return html`<span class="conn ${stale ? "stale" : ""}">${
-    state.error ? `⚠ ${state.error}` : stale ? "reconnecting…" : "live"
+  const offline = !state.connected;
+  return html`<span class="conn ${offline ? "stale" : ""}">${
+    state.error ? `⚠ ${state.error}` : offline ? "reconnecting…" : "live"
   }</span>`;
 }
 
@@ -315,7 +287,7 @@ function selectAgent(id) {
   state.autoFollow = true;
   renderAgents();
   renderDetail();
-  fetchTranscript().then(renderDetail);
+  // Re-subscribing with the new `watch` id is wired in slice 03.3.
 }
 
 function renderAll() {
@@ -324,28 +296,12 @@ function renderAll() {
   renderDetail();
 }
 
-// ── poll loop ───────────────────────────────────────────────────────────────
-let inFlight = false;
-async function tick() {
-  if (document.hidden || inFlight) return;
-  inFlight = true;
-  try {
-    await Promise.all([fetchProgress(), fetchTranscript()]);
-    renderAll();
-  } finally {
-    inFlight = false;
-  }
-}
-
+// ── boot ────────────────────────────────────────────────────────────────────
 renderAll();
-tick();
-setInterval(tick, POLL_MS);
-// Advance the "time on step" timers each second between polls — re-renders the
-// agent cards from the cached model only (no network, no transcript re-parse).
+subscribe(null);
+// Advance the "time on step" timers each second between server pushes —
+// re-renders the agent cards from the cached model only (no network).
 setInterval(() => {
   if (document.hidden) return;
   if (state.model && state.model.summary && state.model.summary.running) renderAgents();
 }, TICK_MS);
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) tick();
-});
