@@ -7,3 +7,6 @@ build-logs/
 .DS_Store
 *.tgz
 .npmrc
+dist/
+coverage/
+.pnpm-store/

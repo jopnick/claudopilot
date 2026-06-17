@@ -78,11 +78,11 @@ SUPERVISOR_PROJECT_PROMPT="${SUPERVISOR_PROJECT_PROMPT:-}"
 
 # ── Isolation mode ──────────────────────────────────────────────────────────
 # 0 (default): workers are claude -p subprocesses in git worktrees, all inside
-#   one container (today's model; run via run-in-docker.sh).
+#   one container (run via `claudopilot run`).
 # 1: this orchestrator runs on the HOST (trusted: scheduling, merges, the SSH key,
 #   the only pushes) and each phase runs as its OWN disposable container against a
 #   per-phase CLONE — the agent's only writable surface, with Claude auth but NO
-#   git push creds. Launched via run-in-docker.sh --isolated.
+#   git push creds. Launched via `claudopilot run --isolated`.
 CLAUDOPILOT_ISOLATED="${CLAUDOPILOT_ISOLATED:-0}"
 WORKER_IMAGE="${WORKER_IMAGE:-claudopilot-runner}"
 
