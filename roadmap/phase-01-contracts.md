@@ -13,7 +13,7 @@ and the browser bundle and is unit-testable in Node.
 <!-- Seed from §Sequencing on the first tick; flip `[ ]`→`[x]` + append the short
      SHA on each slice commit. Source of truth for "what's left." -->
 
-- [ ] 01.1 — `web/events.mjs` event vocabulary + wire-format encoder
+- [x] 01.1 — `web/events.mjs` event vocabulary + wire-format encoder (42daab9)
 - [ ] 01.2 — unit test for `web/events.mjs`
 
 ## Goal
