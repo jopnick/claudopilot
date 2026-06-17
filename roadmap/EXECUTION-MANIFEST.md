@@ -50,7 +50,7 @@ The real contract lives in `prompts/worker.md` (+ the `worker.project.md` overla
 2. [merged] **phase-02** — manifest + config + git wrapper (deps: phase-01)
 3. [merged] **phase-03** — agent capture + render (deps: phase-01)
 4. [running] **phase-04** — docker + runner (deps: phase-01, phase-02)
-5. [pending] **phase-05** — progress + web server (deps: phase-01, phase-02, phase-03)
+5. [running] **phase-05** — progress + web server (deps: phase-01, phase-02, phase-03)
 6. [pending] **phase-06** — orchestrator / driver (deps: phase-01, phase-02, phase-03)
 7. [pending] **phase-07** — CLI integration + dual-stack switch (deps: phase-04, phase-05, phase-06)
 8. [pending] **phase-08** — parity verification + cross-platform CI + cutover (deps: phase-07)
