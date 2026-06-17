@@ -445,6 +445,34 @@ commit_build_log() {  # id  (must run from the BASE_BRANCH checkout, before clea
   fi
 }
 
+# A merge whose ONLY conflicts are in generated/derived files is auto-resolvable:
+# regenerate those files from the merged tree, stage them, and complete the merge.
+# Today that's the pnpm lockfile — every package-adding phase rewrites it, so two
+# phases that ran in parallel ALWAYS collide there, even when their source is
+# package-disjoint. The lock is fully determined by the merged package.json set, so
+# regenerating is the correct resolution (not a textual merge). A conflict touching
+# ANY non-derived file means the streams weren't disjoint — that still parks.
+# Tunable via DERIVED_CONFLICT_FILES (ERE) and LOCKFILE_REGEN_CMD.
+# Returns 0 if fully resolved + committed, 1 otherwise (caller aborts + parks).
+resolve_derived_conflicts() {
+  local id="$1" unresolved derived_re f
+  unresolved=$(git diff --name-only --diff-filter=U)
+  [[ -n "$unresolved" ]] || return 1
+  derived_re="${DERIVED_CONFLICT_FILES:-^pnpm-lock\.yaml$}"
+  # Bail if ANY conflicted path is not a derived file. NB: capture-and-test rather
+  # than `grep -qv` — ugrep (a grep drop-in some hosts ship) mishandles -q+-v.
+  [[ -n "$(grep -vE "$derived_re" <<<"$unresolved")" ]] && return 1
+  log "  [$id] derived-only merge conflict; regenerating: $(tr '\n' ' ' <<<"$unresolved")"
+  # Clear the conflict markers (take base's copy) so the regen tool reads a valid
+  # file, then regenerate from the merged manifests.
+  while IFS= read -r f; do [[ -n "$f" ]] && git checkout --ours -- "$f" >>"$LOG_FILE" 2>&1; done <<<"$unresolved"
+  ( eval "${LOCKFILE_REGEN_CMD:-pnpm install --lockfile-only}" ) >>"$LOG_FILE" 2>&1 || return 1
+  while IFS= read -r f; do [[ -n "$f" ]] && git add -- "$f" >>"$LOG_FILE" 2>&1; done <<<"$unresolved"
+  [[ -n "$(git diff --name-only --diff-filter=U)" ]] && return 1   # still unresolved -> bail
+  git commit --no-edit >>"$LOG_FILE" 2>&1 || return 1
+  return 0
+}
+
 merge_phase() {  # driver-owned, serialized (we are single-threaded here)
   local id="$1" branch="auto/$1"
   log "  MERGE [$id] -> $BASE_BRANCH"
@@ -456,9 +484,15 @@ merge_phase() {  # driver-owned, serialized (we are single-threaded here)
   fi
   git pull --ff-only origin "$BASE_BRANCH" >>"$LOG_FILE" 2>&1 || true
   if ! git merge --no-ff "$branch" -m "Merge ${id} (autonomous)" >>"$LOG_FILE" 2>&1; then
-    git merge --abort >>"$LOG_FILE" 2>&1 || true
-    park_or_halt "$id" 1 "MERGE CONFLICT (concurrent streams must be package-disjoint)"
-    return 1
+    # Parallel phases collide on regenerated files (the lockfile) — auto-resolve those;
+    # a source-file conflict still parks (streams must be package-disjoint).
+    if resolve_derived_conflicts "$id"; then
+      log "  [$id] merge completed after regenerating derived files"
+    else
+      git merge --abort >>"$LOG_FILE" 2>&1 || true
+      park_or_halt "$id" 1 "MERGE CONFLICT (non-derived files; concurrent streams must be package-disjoint)"
+      return 1
+    fi
   fi
   set_state "$id" merged
   commit_build_log "$id"
@@ -473,6 +507,14 @@ forget() { local id="$1"; unset 'PID[$id]'; }
 # signal — claude -p can't return a non-zero code to signal a short stop).
 branch_has_done() {
   local id="$1"
+  # Isolated: the worker commits the DONE_ rename to auto/<id> INSIDE its clone; the
+  # host's auto/<id> ref isn't updated until merge_phase fetches it. Checking the
+  # host ref here would never see the rename, so a finished phase would be supervised
+  # and relaunched forever (and never merge). Check the clone's branch directly.
+  if [[ "$CLAUDOPILOT_ISOLATED" == "1" && -d "${WT[$id]:-/nonexistent}" ]]; then
+    git -C "${WT[$id]}" ls-tree -r --name-only "auto/$id" 2>/dev/null | grep -q "$ROADMAP_DIR/DONE_${id}"
+    return
+  fi
   git log "auto/$id" --oneline -- "$ROADMAP_DIR/DONE_${id}"* 2>/dev/null | grep -q . \
     || git ls-tree -r --name-only "auto/$id" 2>/dev/null | grep -q "$ROADMAP_DIR/DONE_${id}"
 }
