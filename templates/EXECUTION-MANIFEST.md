@@ -26,7 +26,9 @@ The real contract lives in `claudopilot/prompts/worker.md` (+ your
 ## Order
 
 <!-- Phase id is parsed from the first **bold** segment on each line.
-     deps must reference earlier phase ids. -->
+     deps must reference earlier phase ids. A phase with no dependencies may
+     write `(deps: none)` or omit the annotation — both mean "no deps". -->
+
 
 1. [pending] **phase-01** — contracts / shared types (deps: none)
 2. [pending] **phase-02** — feature A (deps: phase-01)
