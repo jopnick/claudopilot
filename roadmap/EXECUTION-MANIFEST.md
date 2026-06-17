@@ -4,7 +4,7 @@
 > [run-loop.sh](../run-loop.sh). Migrates the claudopilot web dashboard from
 > client-side polling to a server-pushed Server-Sent Events stream.
 
-**Status:** in-progress
+**Status:** complete
 
 <!-- The loop watches for "**Status:** complete" to exit 0. The agent flips this
      to `complete` after the last phase is merged. -->
