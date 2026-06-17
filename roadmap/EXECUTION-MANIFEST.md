@@ -47,7 +47,7 @@ overlay). This section is for human readers re-orienting.
 2. [merged] **phase-02** — server SSE endpoint (deps: phase-01)
 3. [merged] **phase-03** — client SSE consumer (deps: phase-01)
 4. [merged] **phase-04** — assembly / remove polling (deps: phase-02, phase-03)
-5. [running] **phase-05** — verify (deps: phase-04)
+5. [merged] **phase-05** — verify (deps: phase-04)
 
 Dependency graph (the `/plan-build` shape): `phase-01 → {phase-02, phase-03} →
 phase-04 → phase-05`. phase-02 and phase-03 fan out concurrently in their own
