@@ -12,7 +12,7 @@ Source of truth: `run-in-docker.sh` (202 lines), `worker-entry.sh` (51),
 
 - [x] 04.1 — `src/docker.ts` typed docker wrapper (c01cb55)
 - [x] 04.2 — `src/runner/runInDocker.ts` (build + isolated/default/shell launch) (ba129c3)
-- [ ] 04.3 — `src/runner/workerEntry.ts` (in-container agent entrypoint)
+- [x] 04.3 — `src/runner/workerEntry.ts` (in-container agent entrypoint) (0e18f1b)
 
 ## Goal
 
