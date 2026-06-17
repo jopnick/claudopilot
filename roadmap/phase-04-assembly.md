@@ -10,7 +10,7 @@ other side's contract). Touches `web-server.mjs`, `web/app.mjs`, and `README.md`
 
 ## Status
 
-- [ ] 04.1 — remove dead polling endpoints from `web-server.mjs`
+- [x] 04.1 — remove dead polling endpoints from `web-server.mjs` (6457272)
 - [ ] 04.2 — remove dead polling remnants from `web/app.mjs`
 - [ ] 04.3 — verify reconnect/resync end-to-end + update README
 
