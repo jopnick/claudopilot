@@ -14,7 +14,7 @@ Node (use `node:path`, spawn binaries directly — never `shell: true` with bash
 - [x] 01.1 — TS build/test tooling (tsconfig, tsup, vitest, eslint) + package.json scripts (4f3b733)
 - [x] 01.2 — `src/types.ts` shared interfaces (568aa24)
 - [x] 01.3 — `src/platform/process.ts` (spawn + process-group kill) + tests (5936bf7)
-- [ ] 01.4 — `src/platform/{which,signals,dockerPath}.ts` + tests
+- [x] 01.4 — `src/platform/{which,signals,dockerPath}.ts` + tests (7df00b0)
 
 ## Goal
 
