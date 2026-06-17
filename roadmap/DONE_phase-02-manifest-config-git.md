@@ -11,9 +11,9 @@ phases 04/05/06 build on. Runs concurrently with phase-03 — do not touch
 
 ## Status
 
-- [ ] 02.1 — `src/manifest.ts` parse + serialize + state transitions
-- [ ] 02.2 — `src/config.ts` typed config loader
-- [ ] 02.3 — `src/git.ts` typed git wrapper
+- [x] 02.1 — `src/manifest.ts` parse + serialize + state transitions (86be63d)
+- [x] 02.2 — `src/config.ts` typed config loader (2bbbc21)
+- [x] 02.3 — `src/git.ts` typed git wrapper (400f9a0)
 
 ## Goal
 
