@@ -44,7 +44,7 @@ const $detail = document.getElementById("detail");
 
 // ── live subscription ─────────────────────────────────────────────────────
 // One EventSource per page; reopened when the selected agent changes (so the
-// server tails the new transcript). Event handlers are wired in slice 03.2.
+// server tails the new transcript).
 let es = null;
 function unsubscribe() {
   if (es) {
@@ -52,9 +52,32 @@ function unsubscribe() {
     es = null;
   }
 }
+
+// `snapshot` and `progress` carry the same full model shape; `snapshot` is
+// just the first push / a post-reconnect resync. Same handler for both.
+function onModel(ev) {
+  state.model = JSON.parse(ev.data);
+  state.error = null;
+  renderAll();
+}
+
+function onTranscript(ev) {
+  const d = JSON.parse(ev.data);
+  if (d.id !== state.selectedId) return; // chunk for a different agent
+  if (state.t.id !== d.id) state.t = { id: d.id, raw: "", offset: 0, exists: false };
+  if (d.reset) state.t = { id: d.id, raw: "", offset: 0, exists: false };
+  state.t.exists = true;
+  if (d.chunk) state.t.raw += d.chunk;
+  if (typeof d.size === "number") state.t.offset = d.size;
+  renderDetail();
+}
+
 function subscribe(id) {
   unsubscribe();
   es = new EventSource(streamUrl(id));
+  es.addEventListener(EV.SNAPSHOT, onModel);
+  es.addEventListener(EV.PROGRESS, onModel);
+  es.addEventListener(EV.TRANSCRIPT, onTranscript);
 }
 
 // ── views ─────────────────────────────────────────────────────────────────

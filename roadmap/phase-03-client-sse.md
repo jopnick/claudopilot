@@ -11,7 +11,7 @@ delivered by phase-02 in parallel — you target the **contract**, not its code.
 ## Status
 
 - [x] 03.1 — replace the poll loop with an EventSource subscription (b9747df)
-- [ ] 03.2 — apply `snapshot` / `progress` / `transcript` events to state
+- [x] 03.2 — apply `snapshot` / `progress` / `transcript` events to state (fed957a)
 - [ ] 03.3 — connection status + re-subscribe on agent selection
 
 ## Goal
