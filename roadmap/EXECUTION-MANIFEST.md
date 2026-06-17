@@ -47,7 +47,7 @@ The real contract lives in `prompts/worker.md` (+ the `worker.project.md` overla
      annotation both mean "no dependencies". -->
 
 1. [merged] **phase-01** — scaffold + shared types + platform primitives (deps: none)
-2. [pending] **phase-02** — manifest + config + git wrapper (deps: phase-01)
+2. [running] **phase-02** — manifest + config + git wrapper (deps: phase-01)
 3. [pending] **phase-03** — agent capture + render (deps: phase-01)
 4. [pending] **phase-04** — docker + runner (deps: phase-01, phase-02)
 5. [pending] **phase-05** — progress + web server (deps: phase-01, phase-02, phase-03)
