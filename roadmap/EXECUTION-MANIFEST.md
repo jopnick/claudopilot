@@ -5,7 +5,7 @@
 > cross-platform (Linux/macOS/Windows-via-WSL2) TypeScript application with
 > functional parity, dual-stacked alongside bash until parity is proven.
 
-**Status:** in-progress
+**Status:** complete
 
 <!-- The loop watches for "**Status:** complete" to exit 0. The agent flips this
      to `complete` after the last phase is merged. -->
@@ -53,7 +53,7 @@ The real contract lives in `prompts/worker.md` (+ the `worker.project.md` overla
 5. [merged] **phase-05** — progress + web server (deps: phase-01, phase-02, phase-03)
 6. [merged] **phase-06** — orchestrator / driver (deps: phase-01, phase-02, phase-03)
 7. [merged] **phase-07** — CLI integration + dual-stack switch (deps: phase-04, phase-05, phase-06)
-8. [pending] **phase-08** — parity verification + cross-platform CI + cutover (deps: phase-07)
+8. [merged] **phase-08** — parity verification + cross-platform CI + cutover (deps: phase-07)
 
 Dependency graph (the `/plan-build` shape): `phase-01 → {phase-02, phase-03} →
 {phase-04, phase-05, phase-06} → phase-07 → phase-08`. phase-02/03 fan out after
