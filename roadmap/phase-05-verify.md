@@ -11,7 +11,7 @@ test surfaces a real bug, fix the smallest thing and note it in §Resume notes.
 ## Status
 
 - [x] 05.1 — unit coverage for the delta/encoder contract (2471f6e)
-- [ ] 05.2 — end-to-end SSE smoke test
+- [x] 05.2 — end-to-end SSE smoke test (315d21f)
 - [ ] 05.3 — bandwidth assertion + manual run notes
 
 ## Goal
