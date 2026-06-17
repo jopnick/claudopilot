@@ -15,6 +15,19 @@ parity test reveals a real behavior gap, fix the smallest thing in the relevant
 - [x] 08.2 — cross-platform GitHub Actions matrix (4af4b81)
 - [x] 08.3 — flip default engine to `ts` + retire bash scripts (85836ff)
 
+### Cutover note
+
+`run-loop.sh`, `worker-entry.sh`, `render-stream.mjs`,
+`render-stream-opencode.mjs`, and `web-server.mjs` are retained because
+they execute **inside the worker container** (the host TS engine builds
+the image and spawns a container which then runs these scripts). The
+host-side bash shims (`run-in-docker.sh`, `progress.sh`, `progress.mjs`)
+and the host engine-switch shim (`bin/claudopilot.mjs`) were removed —
+`package.json` `bin` now points directly at `dist/cli.js`, so the TS
+engine is the only host entrypoint. Porting the in-container loop to TS
+would require shipping `dist/` inside the worker image (or bind-mounting
+it on every run) and is out of scope here.
+
 ## Goal
 
 Establish confidence that the TypeScript engine is behavior-identical to bash across
