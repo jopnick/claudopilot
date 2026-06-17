@@ -52,7 +52,7 @@ The real contract lives in `prompts/worker.md` (+ the `worker.project.md` overla
 4. [merged] **phase-04** — docker + runner (deps: phase-01, phase-02)
 5. [merged] **phase-05** — progress + web server (deps: phase-01, phase-02, phase-03)
 6. [merged] **phase-06** — orchestrator / driver (deps: phase-01, phase-02, phase-03)
-7. [pending] **phase-07** — CLI integration + dual-stack switch (deps: phase-04, phase-05, phase-06)
+7. [running] **phase-07** — CLI integration + dual-stack switch (deps: phase-04, phase-05, phase-06)
 8. [pending] **phase-08** — parity verification + cross-platform CI + cutover (deps: phase-07)
 
 Dependency graph (the `/plan-build` shape): `phase-01 → {phase-02, phase-03} →
