@@ -11,7 +11,7 @@ and `web-server.mjs` (311 lines — the SSE `/api/stream` server, already migrat
 
 ## Status
 
-- [ ] 05.1 — `src/progress/model.ts` snapshot model
+- [x] 05.1 — `src/progress/model.ts` snapshot model (fb10caf)
 - [ ] 05.2 — `src/progress/render.ts` snapshot / watch / follow CLI views
 - [ ] 05.3 — `src/web/server.ts` SSE server
 
