@@ -116,11 +116,17 @@ claudopilot web                 # browser dashboard at http://127.0.0.1:4317
 
 `claudopilot web` starts a tiny **localhost-only**, read-only server (default port
 `4317`, override with `--port`) and serves a [lit-html](https://lit.dev/docs/libraries/standalone-templates/)
-single-page app. It polls the same model as `progress.mjs`, lists every phase/agent
-with live state, slice progress, and current activity, and — when you click an agent —
-streams that worker's **thought stream** (assistant text, thinking, tool calls and
-results) by tailing its rendered transcript, auto-scrolling as new output lands. No
-build step and no network: lit-html is vendored.
+single-page app. The browser opens a single Server-Sent Events channel
+(`GET /api/stream?watch=<agent>`); the server tails the progress model and the
+selected agent's transcript and pushes deltas — one initial `snapshot`, then
+`progress` events whenever the model changes and `transcript` events carrying
+only newly-appended bytes (never the full document again). The page lists every
+phase/agent with live state, slice progress, and current activity, and — when you
+click an agent — streams that worker's **thought stream** (assistant text,
+thinking, tool calls and results), auto-scrolling as new output lands. On
+disconnect, EventSource auto-reconnects and the server resends a fresh
+`snapshot` so the view resyncs without a manual refresh. No build step and no
+network: lit-html is vendored.
 
 **It starts automatically with every `claudopilot run`** — the launcher brings the
 dashboard online alongside the loop and prints `Dashboard: http://127.0.0.1:4317`. In

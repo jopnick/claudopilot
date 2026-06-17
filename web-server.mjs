@@ -96,6 +96,7 @@ const STATIC = {
   "/": join(WEB_DIR, "index.html"),
   "/index.html": join(WEB_DIR, "index.html"),
   "/app.mjs": join(WEB_DIR, "app.mjs"),
+  "/events.mjs": join(WEB_DIR, "events.mjs"),
   "/transcript.mjs": join(WEB_DIR, "transcript.mjs"),
   "/styles.css": join(WEB_DIR, "styles.css"),
   "/lit-html.js": join(WEB_DIR, "vendor", "lit-html.js"),
