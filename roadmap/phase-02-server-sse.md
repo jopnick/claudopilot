@@ -10,7 +10,7 @@ from `web/events.mjs` (phase-01); do not re-invent event names or the delta shap
 
 ## Status
 
-- [ ] 02.1 — `GET /api/stream?watch=<id>` handler: headers + initial snapshot
+- [x] 02.1 — `GET /api/stream?watch=<id>` handler: headers + initial snapshot (b8d5ec8)
 - [ ] 02.2 — server-side watcher pushing `progress` + `transcript` deltas
 - [ ] 02.3 — heartbeat + connection teardown
 

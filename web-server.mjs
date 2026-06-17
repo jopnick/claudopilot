@@ -17,6 +17,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createReadStream, existsSync, statSync, openSync, readSync, closeSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, extname } from "node:path";
+import { EV, STREAM_PATH, encodeEvent } from "./web/events.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, ".."); // mirrors progress.mjs: engine sits at <repo>/claudopilot/
@@ -143,6 +144,60 @@ const server = createServer(async (req, res) => {
     const { body } = await getProgress();
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(body);
+    return;
+  }
+
+  if (path === STREAM_PATH) {
+    const watch = url.searchParams.get("watch") || "";
+    if (!ID_RE.test(watch)) {
+      sendJson(res, 400, JSON.stringify({ error: "invalid watch id" }));
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+    });
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+    const safeWrite = (s) => {
+      if (res.writableEnded || res.destroyed) return false;
+      try {
+        return res.write(s);
+      } catch {
+        return false;
+      }
+    };
+
+    const { body: snapBody } = await getProgress();
+    let snapModel;
+    try {
+      snapModel = JSON.parse(snapBody);
+    } catch {
+      snapModel = { error: "progress parse failed" };
+    }
+    safeWrite(encodeEvent({ event: EV.SNAPSHOT, data: snapModel }));
+
+    const tp0 = transcriptPath(watch);
+    if (tp0) {
+      try {
+        const { size, chunk } = readTail(tp0, 0);
+        if (chunk) {
+          safeWrite(
+            encodeEvent({
+              event: EV.TRANSCRIPT,
+              data: { id: watch, offset: 0, size, chunk, reset: false },
+            }),
+          );
+        }
+      } catch {
+        // tolerate transient read errors; the watcher will retry
+      }
+    }
+
+    req.on("close", () => {
+      if (!res.writableEnded) res.end();
+    });
     return;
   }
 
