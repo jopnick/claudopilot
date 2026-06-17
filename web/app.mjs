@@ -311,7 +311,7 @@ async function postControl(id, action) {
 }
 function act(e, id, action) {
   e.stopPropagation(); // don't also select the card
-  e.target.disabled = true; // debounce until the next poll re-renders
+  e.target.disabled = true; // debounce until the next server push re-renders
   postControl(id, action);
 }
 

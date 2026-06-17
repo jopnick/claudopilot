@@ -2,11 +2,12 @@
 //
 // claudopilot/web-server.mjs — tiny localhost web dashboard for a run-loop.sh run.
 //
-// Read-only. Serves a lit-html single-page app and two JSON/text endpoints backed
-// by the same artifacts the CLI uses:
-//   GET /api/progress            -> `node progress.mjs --json` (the snapshot model)
-//   GET /api/transcript?id=<id>  -> that agent's rendered transcript (thought stream)
-//                                   optional &offset=<bytes> for a cheap incremental tail
+// Read-only. Serves a lit-html single-page app plus:
+//   GET  /api/stream?watch=<id>  -> Server-Sent Events: one `snapshot` push, then
+//                                   `progress` / `transcript` deltas as files
+//                                   change. The server tails artifacts once and
+//                                   fans out incremental bytes (no full re-sends).
+//   POST /api/control?id&action  -> drop a control file for run-loop.sh to apply.
 //
 // Binds to 127.0.0.1 only. Usage:
 //   node claudopilot/web-server.mjs [--port 4317] [--manifest <path>]
@@ -36,7 +37,8 @@ const PORT = Number(valOf("--port") || process.env.PORT || 4317);
 const HOST = valOf("--host") || process.env.CLAUDOPILOT_WEB_HOST || "127.0.0.1";
 const MANIFEST = valOf("--manifest") || process.env.MANIFEST; // else progress.mjs's default
 
-// ── /api/progress ─ shell out to progress.mjs so the web view matches the CLI ─
+// ── progress snapshot ─ shell out to progress.mjs so the web view matches the CLI.
+// Called from /api/stream to build the initial `snapshot` and detect `progress` deltas.
 function getProgress() {
   return new Promise((res) => {
     const args = [join(HERE, "progress.mjs"), "--json"];
@@ -56,7 +58,8 @@ function getProgress() {
   });
 }
 
-// ── /api/transcript ─ the rendered "thought stream" for one agent ─────────────
+// ── transcript tailing ─ resolve and incrementally read one agent's rendered
+// "thought stream". Used by /api/stream to push only newly-appended bytes.
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 function transcriptPath(id) {
   const clone = join(REPO_ROOT, ".claudopilot", "worktrees", id, ".claudopilot", `${id}.transcript.md`);
@@ -93,6 +96,7 @@ const STATIC = {
   "/": join(WEB_DIR, "index.html"),
   "/index.html": join(WEB_DIR, "index.html"),
   "/app.mjs": join(WEB_DIR, "app.mjs"),
+  "/events.mjs": join(WEB_DIR, "events.mjs"),
   "/transcript.mjs": join(WEB_DIR, "transcript.mjs"),
   "/styles.css": join(WEB_DIR, "styles.css"),
   "/lit-html.js": join(WEB_DIR, "vendor", "lit-html.js"),
@@ -137,13 +141,6 @@ const server = createServer(async (req, res) => {
 
   if (req.method !== "GET") {
     res.writeHead(405).end("method not allowed");
-    return;
-  }
-
-  if (path === "/api/progress") {
-    const { body } = await getProgress();
-    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-    res.end(body);
     return;
   }
 
@@ -279,27 +276,6 @@ const server = createServer(async (req, res) => {
     req.on("close", teardown);
     res.on("close", teardown);
     res.on("error", teardown);
-    return;
-  }
-
-  if (path === "/api/transcript") {
-    const id = url.searchParams.get("id") || "";
-    if (!ID_RE.test(id)) {
-      sendJson(res, 400, JSON.stringify({ error: "invalid id" }));
-      return;
-    }
-    const tp = transcriptPath(id);
-    if (!tp) {
-      sendJson(res, 200, JSON.stringify({ exists: false, size: 0, chunk: "" }));
-      return;
-    }
-    const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) | 0);
-    try {
-      const { size, chunk } = readTail(tp, offset);
-      sendJson(res, 200, JSON.stringify({ exists: true, size, chunk, reset: offset > size }));
-    } catch (e) {
-      sendJson(res, 500, JSON.stringify({ error: String(e.message || e) }));
-    }
     return;
   }
 
