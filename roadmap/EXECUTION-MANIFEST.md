@@ -43,7 +43,7 @@ overlay). This section is for human readers re-orienting.
      deps must reference earlier phase ids. `(deps: none)` and omitting the
      annotation both mean "no dependencies". -->
 
-1. [running] **phase-01** — contracts / SSE event vocabulary (deps: none)
+1. [failed] **phase-01** — contracts / SSE event vocabulary (deps: none)
 2. [pending] **phase-02** — server SSE endpoint (deps: phase-01)
 3. [pending] **phase-03** — client SSE consumer (deps: phase-01)
 4. [pending] **phase-04** — assembly / remove polling (deps: phase-02, phase-03)
