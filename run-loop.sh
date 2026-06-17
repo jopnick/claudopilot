@@ -200,7 +200,11 @@ order_lines() {  # emits: state<TAB>id<TAB>space-separated-deps
       if [[ "$line" == *"(deps:"* ]]; then
         deps=$(sed -E 's/.*\(deps:([^)]*)\).*/\1/' <<<"$line" | tr ',' ' ')
       else deps=""; fi
-      printf '%s\t%s\t%s\n' "$st" "$id" "$(echo $deps)"
+      # `(deps: none)` is the human way of writing "no dependencies"; drop a bare
+      # `none` token so it is never mistaken for an (unsatisfiable) phase id.
+      local clean=""
+      for d in $deps; do [[ "$d" == "none" ]] || clean+="$d "; done
+      printf '%s\t%s\t%s\n' "$st" "$id" "${clean% }"
     done
 }
 
