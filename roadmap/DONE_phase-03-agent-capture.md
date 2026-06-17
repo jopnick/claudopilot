@@ -12,9 +12,9 @@ with phase-02 — do not touch `src/manifest.ts`/`src/git.ts`. Source of truth:
 
 ## Status
 
-- [ ] 03.1 — `src/agent/render.ts` (port render-stream.mjs) + `renderOpencode.ts`
-- [ ] 03.2 — `src/agent/capture.ts` in-process capture pipeline
-- [ ] 03.3 — `src/agent/detect.ts` (session-id / rate-limit / transient-API)
+- [x] 03.1 — `src/agent/render.ts` (port render-stream.mjs) + `renderOpencode.ts` (094297c)
+- [x] 03.2 — `src/agent/capture.ts` in-process capture pipeline (a36a75e)
+- [x] 03.3 — `src/agent/detect.ts` (session-id / rate-limit / transient-API) (4134c78)
 
 ## Goal
 
