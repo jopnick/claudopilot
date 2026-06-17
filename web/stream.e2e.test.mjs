@@ -284,3 +284,84 @@ test("SSE stream: snapshot, transcript delta, progress delta, and reconnect resy
   );
 });
 
+test("SSE stream: transcript bandwidth — sum(chunk) ≈ bytes appended (no full re-sends)", async (t) => {
+  const { root, cp } = buildFixture();
+  const port = await findFreePort();
+  const manifest = join(root, "roadmap", "EXECUTION-MANIFEST.md");
+  const transcriptPath = join(root, ".claudopilot", "phase-test.transcript.md");
+
+  writeFileSync(manifest, manifestBody("in-progress"));
+  writeFileSync(transcriptPath, ""); // empty so the first delta carries no bytes
+
+  const child = await startServer({ cp, manifest, port });
+  let conn;
+  t.after(async () => {
+    if (conn) conn.close();
+    await stopServer(child);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  conn = await openStream(port, "phase-test");
+
+  // Each append is large enough that "send the whole file each tick" would
+  // produce O(chunks^2) total bytes — obviously distinguishable from O(chunks).
+  const chunks = [
+    "alpha ".repeat(200),
+    "beta ".repeat(200),
+    "gamma ".repeat(200),
+    "delta ".repeat(200),
+    "epsilon ".repeat(200),
+  ];
+  const totalAppended = chunks.reduce((n, s) => n + Buffer.byteLength(s), 0);
+
+  // small staggered appends so the 500ms server poll catches them as separate
+  // deltas; the test still passes if some get coalesced — what matters is the
+  // total byte count, not the event count.
+  for (const c of chunks) {
+    await new Promise((r) => setTimeout(r, 250));
+    appendFileSync(transcriptPath, c);
+  }
+
+  await conn.waitFor(
+    (evs) => {
+      const seen = evs
+        .filter(isTranscript)
+        .reduce((n, e) => n + Buffer.byteLength(e.parsed.chunk || ""), 0);
+      return seen >= totalAppended;
+    },
+    8000,
+    "all appended bytes received",
+  );
+
+  const transcripts = conn.events.filter(isTranscript);
+  const receivedBytes = transcripts.reduce(
+    (n, e) => n + Buffer.byteLength(e.parsed.chunk || ""),
+    0,
+  );
+
+  // Core regression guard: total bytes received over the channel must equal
+  // the bytes appended. The old poll-every-tick model re-sent the whole
+  // transcript on every change; with deltas, the sum is exact (no overhead
+  // beyond JSON framing, which lives outside `chunk`).
+  assert.ok(
+    receivedBytes >= totalAppended,
+    `received ${receivedBytes} bytes < appended ${totalAppended}`,
+  );
+  assert.ok(
+    receivedBytes <= totalAppended + 64,
+    `received ${receivedBytes} bytes >> appended ${totalAppended} — looks like full-document re-sends`,
+  );
+
+  // Sanity: every delta's offset equals the previous delta's size (no gaps,
+  // no re-sends of earlier bytes).
+  let expectedOffset = 0;
+  for (const e of transcripts) {
+    assert.equal(
+      e.parsed.offset,
+      expectedOffset,
+      `transcript offset ${e.parsed.offset} != expected ${expectedOffset}`,
+    );
+    expectedOffset = e.parsed.size;
+  }
+});
+
