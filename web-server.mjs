@@ -2,11 +2,12 @@
 //
 // claudopilot/web-server.mjs — tiny localhost web dashboard for a run-loop.sh run.
 //
-// Read-only. Serves a lit-html single-page app and two JSON/text endpoints backed
-// by the same artifacts the CLI uses:
-//   GET /api/progress            -> `node progress.mjs --json` (the snapshot model)
-//   GET /api/transcript?id=<id>  -> that agent's rendered transcript (thought stream)
-//                                   optional &offset=<bytes> for a cheap incremental tail
+// Read-only. Serves a lit-html single-page app plus:
+//   GET  /api/stream?watch=<id>  -> Server-Sent Events: one `snapshot` push, then
+//                                   `progress` / `transcript` deltas as files
+//                                   change. The server tails artifacts once and
+//                                   fans out incremental bytes (no full re-sends).
+//   POST /api/control?id&action  -> drop a control file for run-loop.sh to apply.
 //
 // Binds to 127.0.0.1 only. Usage:
 //   node claudopilot/web-server.mjs [--port 4317] [--manifest <path>]
@@ -17,6 +18,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createReadStream, existsSync, statSync, openSync, readSync, closeSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, extname } from "node:path";
+import { EV, STREAM_PATH, HEARTBEAT_MS, encodeEvent, encodeComment } from "./web/events.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, ".."); // mirrors progress.mjs: engine sits at <repo>/claudopilot/
@@ -35,7 +37,8 @@ const PORT = Number(valOf("--port") || process.env.PORT || 4317);
 const HOST = valOf("--host") || process.env.CLAUDOPILOT_WEB_HOST || "127.0.0.1";
 const MANIFEST = valOf("--manifest") || process.env.MANIFEST; // else progress.mjs's default
 
-// ── /api/progress ─ shell out to progress.mjs so the web view matches the CLI ─
+// ── progress snapshot ─ shell out to progress.mjs so the web view matches the CLI.
+// Called from /api/stream to build the initial `snapshot` and detect `progress` deltas.
 function getProgress() {
   return new Promise((res) => {
     const args = [join(HERE, "progress.mjs"), "--json"];
@@ -55,7 +58,8 @@ function getProgress() {
   });
 }
 
-// ── /api/transcript ─ the rendered "thought stream" for one agent ─────────────
+// ── transcript tailing ─ resolve and incrementally read one agent's rendered
+// "thought stream". Used by /api/stream to push only newly-appended bytes.
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 function transcriptPath(id) {
   const clone = join(REPO_ROOT, ".claudopilot", "worktrees", id, ".claudopilot", `${id}.transcript.md`);
@@ -92,6 +96,7 @@ const STATIC = {
   "/": join(WEB_DIR, "index.html"),
   "/index.html": join(WEB_DIR, "index.html"),
   "/app.mjs": join(WEB_DIR, "app.mjs"),
+  "/events.mjs": join(WEB_DIR, "events.mjs"),
   "/transcript.mjs": join(WEB_DIR, "transcript.mjs"),
   "/styles.css": join(WEB_DIR, "styles.css"),
   "/lit-html.js": join(WEB_DIR, "vendor", "lit-html.js"),
@@ -139,31 +144,141 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (path === "/api/progress") {
-    const { body } = await getProgress();
-    res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-    res.end(body);
-    return;
-  }
+  if (path === STREAM_PATH) {
+    // `watch` is optional: with no agent selected (initial page load) the client
+    // subscribes to receive snapshot/progress only; transcript tailing below
+    // self-skips when there is no watched id. Reject only a present-but-malformed id.
+    const watch = url.searchParams.get("watch") || "";
+    if (watch && !ID_RE.test(watch)) {
+      sendJson(res, 400, JSON.stringify({ error: "invalid watch id" }));
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+    });
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
 
-  if (path === "/api/transcript") {
-    const id = url.searchParams.get("id") || "";
-    if (!ID_RE.test(id)) {
-      sendJson(res, 400, JSON.stringify({ error: "invalid id" }));
-      return;
-    }
-    const tp = transcriptPath(id);
-    if (!tp) {
-      sendJson(res, 200, JSON.stringify({ exists: false, size: 0, chunk: "" }));
-      return;
-    }
-    const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) | 0);
+    const safeWrite = (s) => {
+      if (res.writableEnded || res.destroyed) return false;
+      try {
+        return res.write(s);
+      } catch {
+        return false;
+      }
+    };
+
+    const { body: snapBody } = await getProgress();
+    let lastProgressBody = snapBody;
+    let snapModel;
     try {
-      const { size, chunk } = readTail(tp, offset);
-      sendJson(res, 200, JSON.stringify({ exists: true, size, chunk, reset: offset > size }));
-    } catch (e) {
-      sendJson(res, 500, JSON.stringify({ error: String(e.message || e) }));
+      snapModel = JSON.parse(snapBody);
+    } catch {
+      snapModel = { error: "progress parse failed" };
     }
+    safeWrite(encodeEvent({ event: EV.SNAPSHOT, data: snapModel }));
+
+    let lastOffset = 0;
+    const tp0 = transcriptPath(watch);
+    if (tp0) {
+      try {
+        const { size, chunk } = readTail(tp0, 0);
+        if (chunk) {
+          safeWrite(
+            encodeEvent({
+              event: EV.TRANSCRIPT,
+              data: { id: watch, offset: 0, size, chunk, reset: false },
+            }),
+          );
+        }
+        lastOffset = size;
+      } catch {
+        // tolerate transient read errors; the watcher will retry
+      }
+    }
+
+    // ── one debounced server-side watcher per connection ───────────────────
+    let pending = false;
+    let inflight = false;
+    const tickProgress = async () => {
+      if (inflight) {
+        pending = true;
+        return;
+      }
+      inflight = true;
+      try {
+        do {
+          pending = false;
+          const { body } = await getProgress();
+          if (body !== lastProgressBody) {
+            lastProgressBody = body;
+            let model;
+            try {
+              model = JSON.parse(body);
+            } catch {
+              model = { error: "progress parse failed" };
+            }
+            safeWrite(encodeEvent({ event: EV.PROGRESS, data: model }));
+          }
+        } while (pending);
+      } finally {
+        inflight = false;
+      }
+    };
+
+    const tickTranscript = () => {
+      const tp = transcriptPath(watch);
+      if (!tp) return;
+      try {
+        const cur = statSync(tp).size;
+        let reset = false;
+        if (cur < lastOffset) {
+          // file shrank / rotated — reset client buffer and resend from 0
+          lastOffset = 0;
+          reset = true;
+        }
+        if (cur > lastOffset || reset) {
+          const { size, chunk } = readTail(tp, lastOffset);
+          if (chunk || reset) {
+            safeWrite(
+              encodeEvent({
+                event: EV.TRANSCRIPT,
+                data: { id: watch, offset: lastOffset, size, chunk, reset },
+              }),
+            );
+          }
+          lastOffset = size;
+        }
+      } catch {
+        // file may briefly disappear during rotation; ignore and retry next tick
+      }
+    };
+
+    const POLL_MS = 500;
+    const poller = setInterval(() => {
+      tickProgress();
+      tickTranscript();
+    }, POLL_MS);
+
+    const heartbeat = setInterval(() => {
+      safeWrite(encodeComment("hb"));
+    }, HEARTBEAT_MS);
+
+    const teardown = () => {
+      clearInterval(poller);
+      clearInterval(heartbeat);
+      if (!res.writableEnded) {
+        try {
+          res.end();
+        } catch {
+          // socket already torn down
+        }
+      }
+    };
+    req.on("close", teardown);
+    res.on("close", teardown);
+    res.on("error", teardown);
     return;
   }
 
