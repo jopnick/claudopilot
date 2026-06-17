@@ -145,8 +145,11 @@ const server = createServer(async (req, res) => {
   }
 
   if (path === STREAM_PATH) {
+    // `watch` is optional: with no agent selected (initial page load) the client
+    // subscribes to receive snapshot/progress only; transcript tailing below
+    // self-skips when there is no watched id. Reject only a present-but-malformed id.
     const watch = url.searchParams.get("watch") || "";
-    if (!ID_RE.test(watch)) {
+    if (watch && !ID_RE.test(watch)) {
       sendJson(res, 400, JSON.stringify({ error: "invalid watch id" }));
       return;
     }
