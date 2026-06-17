@@ -121,12 +121,11 @@ echo "==> Run TS engine in isolated mode"
 cd "$FIX"
 set +e
 ANTHROPIC_API_KEY="dummy" \
-CLAUDOPILOT_ENGINE=ts \
 CLAUDOPILOT_IMAGE_TAG=claudopilot-runner-ci \
 CLAUDOPILOT_SKIP_BUILD=1 \
 CLAUDOPILOT_WEB=0 \
 BASE_BRANCH_EXPLICIT=1 \
-node "$REPO/bin/claudopilot.mjs" run --isolated
+node "$REPO/dist/cli.js" run --isolated
 CODE=$?
 set -e
 cd "$REPO"

@@ -13,7 +13,7 @@ parity test reveals a real behavior gap, fix the smallest thing in the relevant
 
 - [x] 08.1 — differential parity harness (bash vs TS on a fixture roadmap) (9e19079)
 - [x] 08.2 — cross-platform GitHub Actions matrix (4af4b81)
-- [ ] 08.3 — flip default engine to `ts` + retire bash scripts
+- [x] 08.3 — flip default engine to `ts` + retire bash scripts (85836ff)
 
 ## Goal
 

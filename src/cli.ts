@@ -1,9 +1,11 @@
 /**
- * claudopilot TypeScript engine entrypoint.
+ * claudopilot CLI — the host-side entrypoint after the phase-08 cutover.
  *
- * Built by tsup into `dist/cli.js` (shebang in tsup banner). `bin/claudopilot.mjs`
- * delegates here when `CLAUDOPILOT_ENGINE=ts` is set (or `--engine ts` is passed);
- * otherwise the bash stack handles the command. Phase-07 dual-stack.
+ * Built by tsup into `dist/cli.js` (shebang in tsup banner) and shipped as
+ * the package's `bin`. The bash run-in-docker.sh / progress.sh shims were
+ * retired here; the in-container scripts (run-loop.sh, worker-entry.sh,
+ * render-stream*.mjs, web-server.mjs) remain because the worker image
+ * still executes them inside the container.
  *
  * Subcommands:
  *   init [--force]                 Scaffold a repo (vendor engine + project stubs).
@@ -47,16 +49,15 @@ function pkg(): PackageJson {
 }
 
 // Engine files vendored into the target repo's ./claudopilot/ on `init`.
-// Mirrors `bin/claudopilot.mjs` ENGINE_FILES (kept in sync by hand for now —
-// when phase-08 retires the .mjs shim, this becomes the sole source).
+// Post-cutover this includes only what the worker container still needs at
+// runtime: the in-container loop + worker-entry, render-stream renderers,
+// the in-container web server, browser assets, the runner Dockerfile, and
+// the prompt templates.
 const ENGINE_FILES = [
   "run-loop.sh",
-  "run-in-docker.sh",
   "worker-entry.sh",
   "render-stream.mjs",
   "render-stream-opencode.mjs",
-  "progress.mjs",
-  "progress.sh",
   "web-server.mjs",
   "web/index.html",
   "web/app.mjs",

@@ -33,8 +33,14 @@ jobs:
       - name: Upgrade npm
         run: npm install -g npm@latest
 
+      - name: Build the TS engine
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm -s build
+
       - name: Smoke-test the CLI
-        run: node bin/claudopilot.mjs --version
+        run: node dist/cli.js --version
 
       # Skip if this version is already on the registry (e.g. re-running the
       # v0.1.0 release). Only a fresh version bump actually publishes.

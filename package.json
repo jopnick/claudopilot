@@ -4,17 +4,14 @@
   "description": "Autonomous parallel execution loop for Claude Code — feed it a dependency-annotated roadmap and it builds every eligible phase concurrently, each in its own git worktree, merging green work and parking red.",
   "type": "module",
   "bin": {
-    "claudopilot": "bin/claudopilot.mjs"
+    "claudopilot": "dist/cli.js"
   },
   "files": [
-    "bin/",
+    "dist/",
     "run-loop.sh",
-    "run-in-docker.sh",
     "worker-entry.sh",
     "render-stream.mjs",
     "render-stream-opencode.mjs",
-    "progress.mjs",
-    "progress.sh",
     "web-server.mjs",
     "web/",
     "Dockerfile",

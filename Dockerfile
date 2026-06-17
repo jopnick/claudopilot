@@ -7,7 +7,7 @@
 # doesn't need that, swap to a smaller node-based base image.
 #
 # Build:   docker build -t claudopilot-runner -f claudopilot/Dockerfile .
-# Launch:  bash claudopilot/run-in-docker.sh   (handles mounts + flags)
+# Launch:  claudopilot run                    (handles build + mounts + flags)
 #
 # This image is for long-running autonomous execution: Claude Code, gh,
 # git push over SSH, safe.directory pre-trusted for /work, and an
@@ -23,7 +23,7 @@ ENV PNPM_HOME=/pnpm \
     DEBIAN_FRONTEND=noninteractive
 
 # Any project-specific build-time env vars should be passed at `docker run`
-# time via `-e` (see run-in-docker.sh) rather than baked into the image.
+# time via `-e` (forwarded by the engine's RunSpec) rather than baked in.
 
 # System tools the runner needs beyond what the Playwright base ships.
 # `jq` is for any agent-side JSON munging; `openssh-client` is required
@@ -60,7 +60,7 @@ RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 RUN npm install -g @anthropic-ai/claude-code
 
 # Trust the mounted /work directory at the SYSTEM level. Must be
-# --system (not --global), because run-in-docker.sh mounts the host's
+# --system (not --global), because the engine mounts the host's
 # ~/.gitconfig read-only over the user's home gitconfig at runtime,
 # which would shadow any --global config set during build.
 RUN git config --system --add safe.directory /work
@@ -75,7 +75,7 @@ RUN git config --system --add safe.directory /work
 # created in the bind-mounted /work are owned correctly. Defaults to
 # 1000:1000 (typical Ubuntu single-user setup); override with
 # --build-arg HOST_UID=$(id -u) --build-arg HOST_GID=$(id -g) — which
-# is exactly what claudopilot/run-in-docker.sh does automatically.
+# is exactly what `claudopilot run` does automatically.
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 
@@ -95,7 +95,7 @@ RUN echo 'export PS1="\[\e[36m\][claudopilot]\[\e[0m\] \w \\$ "' >> /home/runner
 
 ENV HOME=/home/runner
 
-# Working dir — the host repo is mounted here at runtime by run-in-docker.sh.
+# Working dir — the host repo is mounted here at runtime by the engine.
 WORKDIR /work
 
 # Switch to the non-root user. All subsequent process invocations
@@ -104,5 +104,5 @@ WORKDIR /work
 USER ${HOST_UID}:${HOST_GID}
 
 # Default command is bash so a stuck container can be poked at; the
-# loop is launched explicitly by run-in-docker.sh.
+# loop is launched explicitly by `claudopilot run`.
 CMD ["bash"]

@@ -73,10 +73,12 @@ Key knobs (full list under [Configuration](#configuration-environment-variables)
 ```
 claudopilot/
 ├── README.md                # this file
-├── run-loop.sh              # the loop driver (one process, one tick at a time)
-├── run-in-docker.sh         # builds the image and runs the loop with mounts
-├── progress.mjs             # read-only progress model (text / --json / --follow)
-├── web-server.mjs           # localhost dashboard server (claudopilot web)
+├── src/                     # TypeScript engine (CLI, orchestrator, progress, web)
+├── dist/                    # built CLI (bin: dist/cli.js)
+├── run-loop.sh              # in-container loop driver (default-mode worker image)
+├── worker-entry.sh          # in-container per-phase entrypoint (--isolated)
+├── render-stream.mjs        # stream-json → transcript renderer (used in-container)
+├── web-server.mjs           # in-container dashboard server when --web is published
 ├── web/                     # lit-html dashboard (agents + live thought streams)
 ├── Dockerfile               # Playwright + pnpm + git + gh + Claude Code
 ├── prompts/
@@ -154,7 +156,7 @@ Prerequisites:
   - **API token (recommended for headless):** export `ANTHROPIC_API_KEY`
     before launching — it is forwarded into the container and the workers
     use it; no interactive login needed:
-    `ANTHROPIC_API_KEY=sk-ant-... bash claudopilot/run-in-docker.sh`. If
+    `ANTHROPIC_API_KEY=sk-ant-... claudopilot run`. If
     `~/.claude/` also exists it is still mounted (for memory + MCP config),
     but the token takes precedence for auth.
   - **Interactive login:** run `claude` once on the host so `~/.claude/` and
@@ -171,7 +173,7 @@ Then:
 git checkout autonomous-runner
 git merge main              # pull in any new main commits
 
-bash claudopilot/run-in-docker.sh
+claudopilot run             # add --isolated for per-phase containers
 ```
 
 Watch progress from another terminal:
@@ -735,7 +737,7 @@ AGENT_DRIVER=opencode AGENT_MODEL=openrouter/deepseek/deepseek-chat \
 ```
 
 OpenCode's JSON events are mapped to the same transcript markers by
-`render-stream-opencode.mjs`, so the dashboard and `progress.mjs` work unchanged.
+`render-stream-opencode.mjs`, so the dashboard and `claudopilot progress` work unchanged.
 
 > **Honest caveat — capability, not plumbing.** The worker contract (branch,
 > implement slices, keep a real test gate green, fix failures, commit, rename
@@ -785,7 +787,7 @@ both against one manifest at once).
 | Runs in | an interactive Claude Code session | a container / host shell, unattended |
 | Setup | `/plugin install`, nothing else | Node + Docker + `claudopilot init` |
 | Worker isolation | git worktree per phase | worktree, or a container per phase (`--isolated`) |
-| Progress UI | background-task view + `/workflows` | `claudopilot web` + `progress.sh` |
+| Progress UI | background-task view + `/workflows` | `claudopilot web` + `claudopilot progress` |
 | Rate limits | handled by the harness | proactive window + reactive backoff |
 | Local / $0 models | uses your Claude Code session | yes, via `AGENT_DRIVER=opencode` + Ollama |
 | Best for | day-to-day, hands-on runs | CI, fully-unattended runs, hard isolation |
@@ -985,8 +987,8 @@ assumptions. Likely things to edit:
   doesn't need browsers, swap to `node:22-bookworm-slim` (or similar)
   for a smaller image.
 
-The shell loop ([run-loop.sh](run-loop.sh)) and Docker wrapper
-([run-in-docker.sh](run-in-docker.sh)) are project-agnostic — you should
+The TypeScript engine ([src/](src/)) and the in-container loop driver
+([run-loop.sh](run-loop.sh)) are project-agnostic — you should
 not need to edit them for a new project.
 
 ## Operational notes
