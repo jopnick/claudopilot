@@ -1,6 +1,6 @@
 {
   "name": "claudopilot",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Autonomous parallel execution loop for Claude Code — feed it a dependency-annotated roadmap and it builds every eligible phase concurrently, each in its own git worktree, merging green work and parking red.",
   "type": "module",
   "bin": {
