@@ -32,7 +32,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "lint": "eslint \"src/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\""
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

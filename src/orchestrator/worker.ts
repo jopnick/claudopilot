@@ -175,7 +175,7 @@ export async function launch(
   deps: WorkerDeps,
   opts: LaunchOptions,
 ): Promise<WorkerRecord> {
-  const { id, config, paths, worktree, resumeSid, supervisorMode, attempt = 0 } = opts;
+  const { id, config, paths } = opts;
   const branch = `auto/${id}`;
 
   await mkdir(path.dirname(paths.log), { recursive: true });

@@ -52,7 +52,6 @@ import {
 } from "./worker.js";
 import {
   branchHasDone,
-  commitBuildLog,
   markResume,
   mergePhase,
   supervise,
@@ -308,7 +307,6 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
   // Per-phase failure/state flags (the bash globals).
   let failed = false;
   let haltCode: number | undefined;
-  let blocked = 0;
 
   // Usage window state.
   const clock = (): number => Math.floor(Date.now() / 1000);
@@ -379,7 +377,6 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
     if (config.keepGoing) {
       log(`  [${id}] ${reason} (exit ${code}) — KEEP_GOING: parking auto/${id} as [blocked], continuing.`);
       await setState(id, "blocked");
-      blocked++;
     } else {
       log(`  [${id}] ${reason} (exit ${code}) — halting.`);
       await setState(id, "failed");

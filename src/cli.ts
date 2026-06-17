@@ -311,10 +311,15 @@ async function cmdRun(args: readonly string[]): Promise<number> {
   };
 
   const docker = new Docker();
-  const buildR = await docker.build(buildSpec(opts));
-  if (buildR.code !== 0) {
-    writeErr(buildR.stderr || "docker build failed");
-    return buildR.code ?? 1;
+  // CLAUDOPILOT_SKIP_BUILD=1 lets CI / parity smokes pre-bake the worker
+  // image (e.g. with a stub `claude`) and reuse it without the engine
+  // overwriting that tag from the canonical Dockerfile.
+  if (process.env["CLAUDOPILOT_SKIP_BUILD"] !== "1") {
+    const buildR = await docker.build(buildSpec(opts));
+    if (buildR.code !== 0) {
+      writeErr(buildR.stderr || "docker build failed");
+      return buildR.code ?? 1;
+    }
   }
 
   if (isolated) {

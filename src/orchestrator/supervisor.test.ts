@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, readFile, stat } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createGunzip } from "node:zlib";
 import { tmpdir } from "node:os";

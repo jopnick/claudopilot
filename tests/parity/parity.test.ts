@@ -96,7 +96,11 @@ function perIdProjection(log: string[]): Record<string, string[]> {
   return out;
 }
 
-describe("parity: bash vs TS engine", () => {
+// The parity harness shells out to `run-loop.sh` and uses a bash stub on
+// PATH; Windows CI runners have neither natively (the worker container is
+// still POSIX, but the orchestrator side of the parity rig is host-side
+// bash). Skip on win32 — Linux + macOS jobs cover both engines.
+describe.skipIf(process.platform === "win32")("parity: bash vs TS engine", () => {
   it("clean merge of a single (deps: none) phase", async () => {
     const { bash, ts } = await runParity({
       phases: [{ id: "phase-a", title: "trivial alpha" }],

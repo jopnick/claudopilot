@@ -8,7 +8,7 @@ import {
   checkStuck,
   type ControlContext,
 } from "./control.js";
-import type { ManifestModel, PhaseState } from "../types.js";
+import type { PhaseState } from "../types.js";
 import type { WorkerRecord } from "./types.js";
 
 function makeRecord(id: string, stream = "/tmp/x.stream.jsonl"): WorkerRecord {
