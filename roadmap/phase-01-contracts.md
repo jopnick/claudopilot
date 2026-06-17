@@ -14,7 +14,7 @@ and the browser bundle and is unit-testable in Node.
      SHA on each slice commit. Source of truth for "what's left." -->
 
 - [x] 01.1 — `web/events.mjs` event vocabulary + wire-format encoder (42daab9)
-- [ ] 01.2 — unit test for `web/events.mjs`
+- [x] 01.2 — unit test for `web/events.mjs` (3d39503)
 
 ## Goal
 
