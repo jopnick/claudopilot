@@ -13,6 +13,11 @@
 // The engine assumes it lives at <repo>/claudopilot/ (run-in-docker.sh bind-mounts
 // the repo at /work and runs `bash claudopilot/run-loop.sh`). So `init` vendors the
 // engine into that directory rather than running it from node_modules.
+//
+// Engine switch (phase-07 dual-stack):
+//   If CLAUDOPILOT_ENGINE=ts (or `--engine ts` is the first arg), delegate to the
+//   built TS entrypoint at <pkg>/dist/cli.js. Default remains `bash` until phase-08
+//   cutover — the bash and TS stacks coexist so we can differential-test them.
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -142,8 +147,47 @@ Usage:
 
 Docs: ${pkg.homepage}`;
 
+// Engine-switch resolution. Returns "ts" or "bash". Strips `--engine <val>` from
+// argv if present so subcommand parsers don't see it.
+function resolveEngine(argv) {
+  // --engine <val> | --engine=<val> may appear anywhere ahead of (or as) the
+  // subcommand. We strip it in place; explicit flag wins over env.
+  let engine = process.env.CLAUDOPILOT_ENGINE;
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i];
+    if (t === "--engine" && argv[i + 1] !== undefined) {
+      engine = argv[i + 1];
+      argv.splice(i, 2);
+      i--;
+    } else if (typeof t === "string" && t.startsWith("--engine=")) {
+      engine = t.slice("--engine=".length);
+      argv.splice(i, 1);
+      i--;
+    }
+  }
+  return engine === "ts" ? "ts" : "bash";
+}
+
+function delegateToTs(argv) {
+  const cli = join(PKG_ROOT, "dist", "cli.js");
+  if (!existsSync(cli)) {
+    die(
+      "TS engine selected (CLAUDOPILOT_ENGINE=ts) but " +
+        `${cli} not found. Run \`pnpm -s build\` (or \`npm run build\`) inside ` +
+        "the claudopilot package, or unset CLAUDOPILOT_ENGINE to use the bash engine.",
+    );
+  }
+  execInherit(process.execPath, [cli, ...argv]);
+}
+
 function main() {
-  const [cmd, ...rest] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const engine = resolveEngine(argv);
+  if (engine === "ts") {
+    delegateToTs(argv);
+    return;
+  }
+  const [cmd, ...rest] = argv;
   switch (cmd) {
     case "init":
       return cmdInit(rest);
