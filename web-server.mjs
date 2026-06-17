@@ -17,7 +17,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createReadStream, existsSync, statSync, openSync, readSync, closeSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, extname } from "node:path";
-import { EV, STREAM_PATH, encodeEvent } from "./web/events.mjs";
+import { EV, STREAM_PATH, HEARTBEAT_MS, encodeEvent, encodeComment } from "./web/events.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, ".."); // mirrors progress.mjs: engine sits at <repo>/claudopilot/
@@ -261,10 +261,24 @@ const server = createServer(async (req, res) => {
       tickTranscript();
     }, POLL_MS);
 
-    req.on("close", () => {
+    const heartbeat = setInterval(() => {
+      safeWrite(encodeComment("hb"));
+    }, HEARTBEAT_MS);
+
+    const teardown = () => {
       clearInterval(poller);
-      if (!res.writableEnded) res.end();
-    });
+      clearInterval(heartbeat);
+      if (!res.writableEnded) {
+        try {
+          res.end();
+        } catch {
+          // socket already torn down
+        }
+      }
+    };
+    req.on("close", teardown);
+    res.on("close", teardown);
+    res.on("error", teardown);
     return;
   }
 
