@@ -473,6 +473,14 @@ forget() { local id="$1"; unset 'PID[$id]'; }
 # signal — claude -p can't return a non-zero code to signal a short stop).
 branch_has_done() {
   local id="$1"
+  # Isolated: the worker commits the DONE_ rename to auto/<id> INSIDE its clone; the
+  # host's auto/<id> ref isn't updated until merge_phase fetches it. Checking the
+  # host ref here would never see the rename, so a finished phase would be supervised
+  # and relaunched forever (and never merge). Check the clone's branch directly.
+  if [[ "$CLAUDOPILOT_ISOLATED" == "1" && -d "${WT[$id]:-/nonexistent}" ]]; then
+    git -C "${WT[$id]}" ls-tree -r --name-only "auto/$id" 2>/dev/null | grep -q "$ROADMAP_DIR/DONE_${id}"
+    return
+  fi
   git log "auto/$id" --oneline -- "$ROADMAP_DIR/DONE_${id}"* 2>/dev/null | grep -q . \
     || git ls-tree -r --name-only "auto/$id" 2>/dev/null | grep -q "$ROADMAP_DIR/DONE_${id}"
 }
