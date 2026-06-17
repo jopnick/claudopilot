@@ -11,7 +11,7 @@ make both stacks coexist. Source of truth: `bin/claudopilot.mjs` (168 lines —
 ## Status
 
 - [x] 07.1 — `src/cli.ts` subcommand dispatch (init/run/progress/web/version/help) (166dc26)
-- [ ] 07.2 — `bin/claudopilot.mjs` dual-stack engine switch
+- [x] 07.2 — `bin/claudopilot.mjs` dual-stack engine switch (dffe041)
 
 ## Goal
 

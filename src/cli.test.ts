@@ -72,7 +72,7 @@ describe("cli main()", () => {
 
 describe("cli progress --json", () => {
   let tmp: string;
-  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let cwdSpy: { mockRestore: () => void };
   beforeEach(async () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), "cp-cli-"));
     await fs.mkdir(path.join(tmp, "roadmap"));
