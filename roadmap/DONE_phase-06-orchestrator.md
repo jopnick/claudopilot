@@ -12,9 +12,9 @@ end-to-end before starting; preserve exit-code semantics exactly (0/2/3/4/5/6/7/
 
 ## Status
 
-- [ ] 06.1 — `src/orchestrator/worker.ts` (prepare worktree/clone, launch, kill)
-- [ ] 06.2 — `src/orchestrator/supervisor.ts` + `control.ts`
-- [ ] 06.3 — `src/orchestrator/driver.ts` scheduler loop + terminal/exit semantics
+- [x] 06.1 — `src/orchestrator/worker.ts` (prepare worktree/clone, launch, kill) (7466044)
+- [x] 06.2 — `src/orchestrator/supervisor.ts` + `control.ts` (90c0882)
+- [x] 06.3 — `src/orchestrator/driver.ts` scheduler loop + terminal/exit semantics (7c53e92)
 
 ## Goal
 
