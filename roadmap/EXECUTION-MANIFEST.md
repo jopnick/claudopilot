@@ -45,7 +45,7 @@ overlay). This section is for human readers re-orienting.
 
 1. [merged] **phase-01** — contracts / SSE event vocabulary (deps: none)
 2. [merged] **phase-02** — server SSE endpoint (deps: phase-01)
-3. [pending] **phase-03** — client SSE consumer (deps: phase-01)
+3. [running] **phase-03** — client SSE consumer (deps: phase-01)
 4. [pending] **phase-04** — assembly / remove polling (deps: phase-02, phase-03)
 5. [pending] **phase-05** — verify (deps: phase-04)
 
