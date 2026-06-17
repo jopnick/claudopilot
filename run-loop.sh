@@ -477,6 +477,13 @@ forget() { local id="$1"; unset 'PID[$id]'; }
 # signal — claude -p can't return a non-zero code to signal a short stop).
 branch_has_done() {
   local id="$1"
+  # Isolated: the worker committed to auto/<id> inside its CLONE, not the host repo.
+  # Sync those commits into the orchestrator's branch ref before checking (local, no
+  # network) — otherwise the done-signal is read off a stale ref that never advances,
+  # so the check is always false and every phase loops to a supervisor halt.
+  if [[ "$CLAUDOPILOT_ISOLATED" == "1" && -d "${WT[$id]:-/nonexistent}" ]]; then
+    git fetch --quiet "${WT[$id]}" "+auto/$id:auto/$id" >>"$LOG_FILE" 2>&1 || true
+  fi
   git log "auto/$id" --oneline -- "$ROADMAP_DIR/DONE_${id}"* 2>/dev/null | grep -q . \
     || git ls-tree -r --name-only "auto/$id" 2>/dev/null | grep -q "$ROADMAP_DIR/DONE_${id}"
 }
