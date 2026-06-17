@@ -46,7 +46,7 @@ The real contract lives in `prompts/worker.md` (+ the `worker.project.md` overla
      deps must reference earlier phase ids. `(deps: none)` and omitting the
      annotation both mean "no dependencies". -->
 
-1. [running] **phase-01** — scaffold + shared types + platform primitives (deps: none)
+1. [merged] **phase-01** — scaffold + shared types + platform primitives (deps: none)
 2. [pending] **phase-02** — manifest + config + git wrapper (deps: phase-01)
 3. [pending] **phase-03** — agent capture + render (deps: phase-01)
 4. [pending] **phase-04** — docker + runner (deps: phase-01, phase-02)
