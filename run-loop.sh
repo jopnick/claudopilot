@@ -224,7 +224,7 @@ all_merged() {  # true ONLY if there is >=1 order entry and every one is merged
 }
 
 # ── Worker lifecycle (background) ─────────────────────────────────────────
-declare -A PID WT PLOG SUPATT STREAM TRANSCRIPT
+declare -A PID WT PLOG SUPATT STREAM TRANSCRIPT RESUME_SID
 declare -A APIRETRY STUCK_SIZE STUCK_SINCE   # transient-retry counts + watchdog progress tracking
 FAILED=0; BLOCKED=0; HALT_CODE=""
 
@@ -273,10 +273,10 @@ supervisor_prompt() { cat "$SUPERVISOR_PROMPT_FILE"; _overlay "$SUPERVISOR_PROJE
 #   - rendered + stderr   -> $RUNDIR/<id>.log            (so is_rate_limited still works)
 # Returns claude's exit code (pipefail carries it through; tee/renderer exit 0).
 # Caller sets cwd and any extra env (e.g. SUPERVISOR_MODE).
-capture_agent() {  # id, prompt
-  local id="$1" prompt="$2"
+capture_agent() {  # id, prompt, [resume_sid]
+  local id="$1" prompt="$2" sid="${3:-}"
   local plog="$RUNDIR/$id.log" stream="$RUNDIR/$id.stream.jsonl" transcript="$RUNDIR/$id.transcript.md"
-  { echo; echo "=== [$id] ${SUPERVISOR_MODE:+supervisor }run (attempt ${SUPATT[$id]:-0}) ==="; } >>"$transcript"
+  { echo; echo "=== [$id] ${SUPERVISOR_MODE:+supervisor }run (attempt ${SUPATT[$id]:-0})${sid:+ resume=$sid} ==="; } >>"$transcript"
   if [[ "$AGENT_DRIVER" == "opencode" ]]; then
     # OpenCode headless. --dangerously-skip-permissions is the bypassPermissions
     # equivalent (auto-approve). Its --format json events are mapped to the same
@@ -287,7 +287,11 @@ capture_agent() {  # id, prompt
       | node "$RENDER_STREAM_OPENCODE" \
       | tee -a "$transcript" >>"$plog"
   else
-    claude -p "$prompt" \
+    # On resume (claude driver only), --resume continues the prior conversation and
+    # the prompt is the next turn; otherwise run fresh with the full prompt.
+    local pre=(-p "$prompt")
+    [[ -n "$sid" ]] && pre=(--resume "$sid" -p "$prompt")
+    claude "${pre[@]}" \
         --permission-mode bypassPermissions --verbose --output-format stream-json 2>>"$plog" \
       | tee -a "$stream" \
       | node "$RENDER_STREAM" \
@@ -316,7 +320,7 @@ run_phase_container() {  # id
   docker run --rm --name "cp-w-$id" --init --ipc=host --shm-size=2g \
     -v "$wt:/work" "${cm[@]}" \
     -e ANTHROPIC_API_KEY -e CLAUDOPILOT_PHASE="$id" -e GATE_CMD \
-    -e WORKTREE_PREPARE_CMD -e SUPERVISOR_MODE \
+    -e WORKTREE_PREPARE_CMD -e SUPERVISOR_MODE -e CLAUDOPILOT_RESUME_SID \
     "$WORKER_IMAGE" bash /work/claudopilot/worker-entry.sh
 }
 
@@ -330,21 +334,27 @@ launch() {  # id -> spawn a worker (subprocess or container), record pid
 
   if [[ "$CLAUDOPILOT_ISOLATED" == "1" ]]; then
     { worker_prompt; printf '\n\nThe phase to execute is: %s\nYour working directory (/work) is this phase'\''s clone on branch auto/%s.\nBuild, gate, and rename the phase doc to DONE_, then stop. Do NOT merge, push, or\nedit the manifest — the orchestrator owns those.\n' "$id" "$id"; } > "$wt/.claudopilot/$id.prompt.txt"
-    log "  LAUNCH [$id] (isolated container cp-w-$id; running=$(running_count)/$MAX_PARALLEL) -> ${TRANSCRIPT[$id]}"
-    ( run_phase_container "$id" ) >>"$wt/.claudopilot/$id.docker.log" 2>&1 &
+    local sid_iso="${RESUME_SID[$id]:-}"; unset 'RESUME_SID[$id]'
+    log "  LAUNCH [$id] (isolated container cp-w-$id; running=$(running_count)/$MAX_PARALLEL)${sid_iso:+ [resume]} -> ${TRANSCRIPT[$id]}"
+    ( CLAUDOPILOT_RESUME_SID="$sid_iso" run_phase_container "$id" ) >>"$wt/.claudopilot/$id.docker.log" 2>&1 &
     PID[$id]=$!
     return
   fi
 
-  log "  LAUNCH [$id] (running=$(running_count)/$MAX_PARALLEL) -> ${TRANSCRIPT[$id]}"
+  local sid="${RESUME_SID[$id]:-}"; unset 'RESUME_SID[$id]'
+  log "  LAUNCH [$id] (running=$(running_count)/$MAX_PARALLEL)${sid:+ [resume]} -> ${TRANSCRIPT[$id]}"
   (
     cd "$wt"
-    capture_agent "$id" "$(worker_prompt)
+    if [[ -n "$sid" ]]; then
+      capture_agent "$id" "$RESUME_NUDGE" "$sid"
+    else
+      capture_agent "$id" "$(worker_prompt)
 
 The phase to execute is: $id
 Your working directory is this phase's git worktree on branch auto/$id.
 Build, gate, and rename the phase doc to DONE_, then exit 0. Do NOT merge
 or edit the manifest — the driver owns those."
+    fi
   ) &
   PID[$id]=$!
 }
@@ -375,8 +385,24 @@ retry_transient_api() {  # id
   (( APIRETRY[$id] >= TRANSIENT_API_MAX_RETRIES )) && return 1
   APIRETRY[$id]=$(( APIRETRY[$id] + 1 ))
   log "  [$id] transient API error — relaunching (retry ${APIRETRY[$id]}/$TRANSIENT_API_MAX_RETRIES)."
-  set_state "$id" pending; return 0
+  mark_resume "$id"; set_state "$id" pending; return 0
 }
+
+# Remember the worker's claude session id so the NEXT launch resumes the SAME
+# conversation instead of cold-restarting (which loses all in-flight work and
+# re-orients from scratch). Only used when an interruption is not the worker's
+# fault — a transient API/network error, a stuck-watchdog/poke kill, or a
+# rate-limit cooldown. No-op if no session was created, or under a non-claude
+# driver whose stream carries no claude session_id.
+mark_resume() {  # id
+  local id="$1" sp="${STREAM[$id]:-}" sid=""
+  [[ -f "$sp" ]] && sid=$(grep -oE '"session_id":"[^"]+"' "$sp" 2>/dev/null | head -1 | cut -d'"' -f4)
+  if [[ -n "$sid" ]]; then RESUME_SID[$id]="$sid"; log "  [$id] will resume session ${sid} on relaunch"; fi
+}
+
+# The next-turn message sent when resuming an interrupted worker. Its prior
+# context is intact in the resumed session, so this is a short re-orient.
+RESUME_NUDGE="A transient interruption (network/API error, watchdog, or poke) stopped you mid-run and your session has now been resumed — your prior context is intact. Re-read the ## Status checklist in your phase doc, then continue from the first unchecked slice. Same contract: build each remaining slice, keep the gate green, rename the phase doc to DONE_ when all slices are done, then stop. Do NOT re-seed the checklist, merge, or edit the manifest."
 
 # Recursively TERM a worker process and its descendants (the subshell plus the
 # claude/node/tee pipeline), so a poke/watchdog kill actually stops the agent.
@@ -459,7 +485,7 @@ supervise() {  # id, code
   local id="$1" code="$2" plog="${PLOG[$id]}"
   if is_rate_limited "$plog"; then
     log "  [$id] rate-limit-shaped; relaunch after cooldown."
-    cool_down "$plog"; set_state "$id" pending; forget "$id"; return
+    cool_down "$plog"; mark_resume "$id"; set_state "$id" pending; forget "$id"; return
   fi
   # A transient API error (not a gate failure) left no DONE_ — relaunch the worker
   # without spending a supervisor attempt; only fall through once the cap is hit.
@@ -530,7 +556,7 @@ handle_exit() {  # id, code
     *)
       if is_rate_limited "$plog"; then
         log "  [$id] rate-limit-shaped exit; relaunch after cooldown."
-        cool_down "$plog"; set_state "$id" pending; forget "$id"; return
+        cool_down "$plog"; mark_resume "$id"; set_state "$id" pending; forget "$id"; return
       fi
       if is_transient_api_error "$plog" && retry_transient_api "$id"; then forget "$id"; return; fi
       park_or_halt "$id" "$code" "worker exited $code"; forget "$id" ;;
@@ -570,23 +596,27 @@ poke_worker() {  # id, reason
   log "  [$id] $reason — killing + relaunching worker."
   kill_tree "${PID[$id]}"; wait "${PID[$id]}" 2>/dev/null
   unset 'STUCK_SIZE[$id]' 'STUCK_SINCE[$id]'
-  set_state "$id" pending; forget "$id"
+  mark_resume "$id"; set_state "$id" pending; forget "$id"
 }
 
-# Watchdog: relaunch any running worker whose transcript has not grown for
-# STUCK_TIMEOUT seconds. Progress = transcript byte growth (the agent writes there
-# live); no growth for the window => wedged stream or a hung gate command.
+# Watchdog: relaunch any running worker whose raw event STREAM has not grown for
+# STUCK_TIMEOUT seconds. Progress = stream-json byte growth, which counts extended
+# "thinking" (thinking_tokens telemetry streams there even before any message or
+# tool has completed) — so a worker mid-thought is NOT falsely killed (the rendered
+# transcript stays flat during a long think, which used to trip this). Only a truly
+# silent stream — a wedged API connection, or a tool/gate command hung past the
+# window with no output at all — trips it.
 check_stuck() {
   (( STUCK_TIMEOUT > 0 )) || return 0
-  local now id tp sz; now=$(date +%s)
+  local now id sp sz; now=$(date +%s)
   for id in "${!PID[@]}"; do
-    tp="${TRANSCRIPT[$id]:-}"; [[ -f "$tp" ]] || continue
-    sz=$(stat -c %s "$tp" 2>/dev/null || echo 0)
+    sp="${STREAM[$id]:-}"; [[ -f "$sp" ]] || continue
+    sz=$(stat -c %s "$sp" 2>/dev/null || echo 0)
     if [[ "${STUCK_SIZE[$id]:-x}" != "$sz" ]]; then
       STUCK_SIZE[$id]="$sz"; STUCK_SINCE[$id]="$now"; continue
     fi
     if (( now - ${STUCK_SINCE[$id]:-$now} >= STUCK_TIMEOUT )); then
-      poke_worker "$id" "STUCK: no transcript progress for ${STUCK_TIMEOUT}s"
+      poke_worker "$id" "STUCK: no stream output for ${STUCK_TIMEOUT}s"
     fi
   done
 }
