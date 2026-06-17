@@ -17,6 +17,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createReadStream, existsSync, statSync, openSync, readSync, closeSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, extname } from "node:path";
+import { EV, STREAM_PATH, HEARTBEAT_MS, encodeEvent, encodeComment } from "./web/events.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, ".."); // mirrors progress.mjs: engine sits at <repo>/claudopilot/
@@ -143,6 +144,141 @@ const server = createServer(async (req, res) => {
     const { body } = await getProgress();
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     res.end(body);
+    return;
+  }
+
+  if (path === STREAM_PATH) {
+    const watch = url.searchParams.get("watch") || "";
+    if (!ID_RE.test(watch)) {
+      sendJson(res, 400, JSON.stringify({ error: "invalid watch id" }));
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+    });
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+    const safeWrite = (s) => {
+      if (res.writableEnded || res.destroyed) return false;
+      try {
+        return res.write(s);
+      } catch {
+        return false;
+      }
+    };
+
+    const { body: snapBody } = await getProgress();
+    let lastProgressBody = snapBody;
+    let snapModel;
+    try {
+      snapModel = JSON.parse(snapBody);
+    } catch {
+      snapModel = { error: "progress parse failed" };
+    }
+    safeWrite(encodeEvent({ event: EV.SNAPSHOT, data: snapModel }));
+
+    let lastOffset = 0;
+    const tp0 = transcriptPath(watch);
+    if (tp0) {
+      try {
+        const { size, chunk } = readTail(tp0, 0);
+        if (chunk) {
+          safeWrite(
+            encodeEvent({
+              event: EV.TRANSCRIPT,
+              data: { id: watch, offset: 0, size, chunk, reset: false },
+            }),
+          );
+        }
+        lastOffset = size;
+      } catch {
+        // tolerate transient read errors; the watcher will retry
+      }
+    }
+
+    // ── one debounced server-side watcher per connection ───────────────────
+    let pending = false;
+    let inflight = false;
+    const tickProgress = async () => {
+      if (inflight) {
+        pending = true;
+        return;
+      }
+      inflight = true;
+      try {
+        do {
+          pending = false;
+          const { body } = await getProgress();
+          if (body !== lastProgressBody) {
+            lastProgressBody = body;
+            let model;
+            try {
+              model = JSON.parse(body);
+            } catch {
+              model = { error: "progress parse failed" };
+            }
+            safeWrite(encodeEvent({ event: EV.PROGRESS, data: model }));
+          }
+        } while (pending);
+      } finally {
+        inflight = false;
+      }
+    };
+
+    const tickTranscript = () => {
+      const tp = transcriptPath(watch);
+      if (!tp) return;
+      try {
+        const cur = statSync(tp).size;
+        let reset = false;
+        if (cur < lastOffset) {
+          // file shrank / rotated — reset client buffer and resend from 0
+          lastOffset = 0;
+          reset = true;
+        }
+        if (cur > lastOffset || reset) {
+          const { size, chunk } = readTail(tp, lastOffset);
+          if (chunk || reset) {
+            safeWrite(
+              encodeEvent({
+                event: EV.TRANSCRIPT,
+                data: { id: watch, offset: lastOffset, size, chunk, reset },
+              }),
+            );
+          }
+          lastOffset = size;
+        }
+      } catch {
+        // file may briefly disappear during rotation; ignore and retry next tick
+      }
+    };
+
+    const POLL_MS = 500;
+    const poller = setInterval(() => {
+      tickProgress();
+      tickTranscript();
+    }, POLL_MS);
+
+    const heartbeat = setInterval(() => {
+      safeWrite(encodeComment("hb"));
+    }, HEARTBEAT_MS);
+
+    const teardown = () => {
+      clearInterval(poller);
+      clearInterval(heartbeat);
+      if (!res.writableEnded) {
+        try {
+          res.end();
+        } catch {
+          // socket already torn down
+        }
+      }
+    };
+    req.on("close", teardown);
+    res.on("close", teardown);
+    res.on("error", teardown);
     return;
   }
 
