@@ -75,6 +75,17 @@ function onTranscript(ev) {
 function subscribe(id) {
   unsubscribe();
   es = new EventSource(streamUrl(id));
+  es.onopen = () => {
+    state.connected = true;
+    state.error = null;
+    renderHeader();
+  };
+  // EventSource auto-reconnects on its own; the server resends `snapshot`
+  // after the new connection opens, so no manual resync is needed here.
+  es.onerror = () => {
+    state.connected = false;
+    renderHeader();
+  };
   es.addEventListener(EV.SNAPSHOT, onModel);
   es.addEventListener(EV.PROGRESS, onModel);
   es.addEventListener(EV.TRANSCRIPT, onTranscript);
@@ -310,7 +321,9 @@ function selectAgent(id) {
   state.autoFollow = true;
   renderAgents();
   renderDetail();
-  // Re-subscribing with the new `watch` id is wired in slice 03.3.
+  // Reopen the stream with the new `watch` id so the server tails this agent's
+  // transcript. The fresh `snapshot` re-syncs the model.
+  subscribe(id);
 }
 
 function renderAll() {
