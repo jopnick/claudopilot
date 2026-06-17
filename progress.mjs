@@ -19,7 +19,7 @@
 // Manifest defaults to roadmap/EXECUTION-MANIFEST.browser-slice.md if present,
 // else roadmap/EXECUTION-MANIFEST.md. Override with --manifest or $MANIFEST.
 
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -137,6 +137,154 @@ function parseSlices(text) {
   return { seeded: false, slices: [] };
 }
 
+// ── live "current step" — what Claude is doing right now, from the stream-json ─
+// The raw `<id>.stream.jsonl` is the structured event log (more reliable than the
+// rendered transcript). We tail it, look at the last meaningful event, and derive
+// a human-readable label + an optional detail. `since` is the stream file's mtime:
+// each event marks a state transition, so (now - since) is "time on this step".
+// Long, important cases (a tool running for minutes, a hang) write nothing while
+// they wait, so the mtime freezes and the elapsed timer grows — exactly the signal
+// you want when a phase looks stuck.
+const STREAM_TAIL_BYTES = 64 * 1024;
+
+function streamPath(id) {
+  const cands = [
+    join(REPO_ROOT, ".claudopilot", "worktrees", id, ".claudopilot", `${id}.stream.jsonl`),
+    join(REPO_ROOT, ".claudopilot", `${id}.stream.jsonl`),
+  ];
+  return cands.find((c) => existsSync(c)) || null;
+}
+
+function readTailUtf8(path, maxBytes) {
+  const size = statSync(path).size;
+  const start = Math.max(0, size - maxBytes);
+  const fd = openSync(path, "r");
+  try {
+    const len = size - start;
+    const buf = Buffer.allocUnsafe(len);
+    readSync(fd, buf, 0, len, start);
+    return { text: buf.toString("utf8"), partialHead: start > 0 };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Pull a short, human-useful hint out of a tool_use input (the command, the file,
+// the search, the subagent task…). First non-empty line, capped.
+function toolHint(tu) {
+  const i = tu && tu.input;
+  if (!i || typeof i !== "object") return null;
+  const pick = (v) =>
+    typeof v === "string" && v.trim() ? v.trim().split("\n")[0].slice(0, 120) : null;
+  return (
+    pick(i.description) || pick(i.command) || pick(i.file_path) || pick(i.path) ||
+    pick(i.pattern) || pick(i.query) || pick(i.url) || pick(i.prompt) || null
+  );
+}
+
+// Cumulative output tokens generated across the whole run — a steadily-climbing
+// number that proves the model is still working even while one turn sits silent.
+// We sum `usage.output_tokens` from every `assistant` event (each agentic round is
+// its own API call with its own usage); the `result` event is skipped so its
+// session summary doesn't double-count. Reads the full file (not just the tail) so
+// the total stays monotonic instead of shrinking as old events scroll out of view.
+const TOKEN_SCAN_MAX_BYTES = 64 * 1024 * 1024; // pathological-file guard
+function sumOutputTokens(path) {
+  let text;
+  try {
+    if (statSync(path).size > TOKEN_SCAN_MAX_BYTES) return null;
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  let total = 0;
+  let seen = false;
+  for (const line of text.split("\n")) {
+    if (!line.includes('"output_tokens"')) continue; // cheap pre-filter: skip non-usage lines
+    try {
+      const ev = JSON.parse(line);
+      const u = ev.type === "assistant" ? ev.message?.usage : null;
+      if (u && typeof u.output_tokens === "number") {
+        total += u.output_tokens;
+        seen = true;
+      }
+    } catch {
+      /* skip partial / non-JSON lines */
+    }
+  }
+  return seen ? total : null;
+}
+
+function deriveStep(id) {
+  const base = deriveStepBase(id);
+  if (!base) return null;
+  const path = streamPath(id);
+  base.tokens = path ? sumOutputTokens(path) : null;
+  return base;
+}
+
+function deriveStepBase(id) {
+  const path = streamPath(id);
+  if (!path) return null;
+  let since, text, partialHead;
+  try {
+    since = statSync(path).mtimeMs;
+    ({ text, partialHead } = readTailUtf8(path, STREAM_TAIL_BYTES));
+  } catch {
+    return null;
+  }
+
+  const events = [];
+  text.split("\n").forEach((line, idx) => {
+    const t = line.trim();
+    if (!t) return;
+    if (idx === 0 && partialHead) return; // first line may be a truncated fragment
+    try {
+      events.push(JSON.parse(t));
+    } catch {
+      /* skip non-JSON / partial lines */
+    }
+  });
+
+  const last = events[events.length - 1];
+  if (!last) return { label: "Working", detail: null, since };
+
+  if (last.type === "result") return { label: "Finishing", detail: null, since };
+  if (last.type === "rate_limit_event") return { label: "Rate limited", detail: null, since };
+  if (last.type === "system") {
+    if (last.subtype === "api_retry") return { label: "Retrying API", detail: null, since };
+    if (last.subtype === "init") return { label: "Starting", detail: null, since };
+    if (last.subtype === "thinking_tokens") return { label: "Thinking", detail: null, since };
+    // other system telemetry — characterize from the last real message below
+  }
+
+  // The last assistant/user message tells us whether a tool is running (assistant
+  // emitted tool_use, now executing) or the model is thinking (a tool result just
+  // came back, or it is mid-turn).
+  let msg = null;
+  for (let k = events.length - 1; k >= 0; k--) {
+    if (events[k].type === "assistant" || events[k].type === "user") {
+      msg = events[k];
+      break;
+    }
+  }
+  if (!msg) return { label: "Working", detail: null, since };
+
+  const blocks = Array.isArray(msg.message?.content) ? msg.message.content : [];
+  if (msg.type === "assistant") {
+    const tools = blocks.filter((b) => b && b.type === "tool_use");
+    if (tools.length) {
+      const tu = tools[tools.length - 1];
+      const extra = tools.length > 1 ? ` (+${tools.length - 1})` : "";
+      return { label: `Running ${tu.name || "tool"}${extra}`, detail: toolHint(tu), since };
+    }
+    const hasText = blocks.some((b) => b && b.type === "text" && b.text && b.text.trim());
+    return { label: hasText ? "Responding" : "Thinking", detail: null, since };
+  }
+  // a user message in the stream is a tool result → the model is processing it
+  return { label: "Thinking", detail: null, since };
+}
+
 // ── parse the manifest Order list (same grammar as run-loop.sh) ─────────────
 function buildModel() {
   const text = readMaybe(MANIFEST);
@@ -184,19 +332,35 @@ function buildModel() {
     p.slicesTotal = slices.length;
     p.lastCommit = lastCommit;
 
-    // live "current activity" — last meaningful line of the rendered transcript
+    // live "current step" — what Claude is doing now + when it started (file mtime),
+    // derived from the structured stream-json. `activity` stays a flat string for
+    // back-compat (CLI + older clients); `step` carries the structured shape the web
+    // dashboard renders with a live elapsed timer.
+    p.step = null;
     p.activity = null;
     if (p.state === "running") {
-      // isolated: the live transcript is inside the phase clone; else in $RUNDIR.
-      const txt =
-        readMaybe(join(REPO_ROOT, ".claudopilot", "worktrees", p.id, ".claudopilot", `${p.id}.transcript.md`)) ??
-        readMaybe(join(REPO_ROOT, ".claudopilot", `${p.id}.transcript.md`));
-      if (txt) {
-        const lines = txt
-          .split("\n")
-          .map((l) => l.trimEnd())
-          .filter((l) => l.trim() && !l.startsWith("==="));
-        if (lines.length) p.activity = lines[lines.length - 1].trim().slice(0, 160);
+      let step = null;
+      try {
+        step = deriveStep(p.id);
+      } catch {
+        step = null;
+      }
+      if (step) {
+        p.step = step;
+        p.activity = step.detail ? `${step.label}: ${step.detail}` : step.label;
+      } else {
+        // fallback: last meaningful line of the rendered transcript (isolated mode
+        // writes it inside the phase clone; else in $RUNDIR).
+        const txt =
+          readMaybe(join(REPO_ROOT, ".claudopilot", "worktrees", p.id, ".claudopilot", `${p.id}.transcript.md`)) ??
+          readMaybe(join(REPO_ROOT, ".claudopilot", `${p.id}.transcript.md`));
+        if (txt) {
+          const lines = txt
+            .split("\n")
+            .map((l) => l.trimEnd())
+            .filter((l) => l.trim() && !l.startsWith("==="));
+          if (lines.length) p.activity = lines[lines.length - 1].trim().slice(0, 160);
+        }
       }
     }
   }
@@ -250,6 +414,24 @@ const C = process.stdout.isTTY
 
 const stateColor = { merged: C.grn, running: C.cyn, blocked: C.ylw, failed: C.red, pending: C.dim };
 
+// Compact elapsed: 9s · 4m12s · 1h03m. Shared shape with the web client.
+function fmtDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${String(m % 60).padStart(2, "0")}m`;
+}
+
+// Compact token count: 920 · 12.3k · 1.2M. Mirrors fmtTokens in web/app.mjs.
+function fmtTokens(n) {
+  if (n == null) return "";
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 function render(model) {
   if (model.error) return model.error;
   const s = model.summary;
@@ -275,7 +457,14 @@ function render(model) {
     const deps = p.deps.length ? ` ${C.dim}deps: ${p.deps.join(", ")}${C.r}` : "";
     out.push(`${col}${String(i + 1).padStart(2)}. [${p.state}] ${C.b}${p.id}${C.r}${col}${counts}${C.r}${deps}`);
     if (p.state === "running" || p.state === "blocked" || p.state === "failed" || (p.slicesDone > 0 && p.state !== "merged")) {
-      if (p.activity) out.push(`      ${C.cyn}now${C.r} ${p.activity}`);
+      if (p.step) {
+        const el = fmtDur(Date.now() - p.step.since);
+        const detail = p.step.detail ? `: ${p.step.detail}` : "";
+        const tok = p.step.tokens != null ? ` · ${fmtTokens(p.step.tokens)} tok` : "";
+        out.push(`      ${C.cyn}now${C.r} ${p.step.label}${detail} ${C.dim}(${el}${tok})${C.r}`);
+      } else if (p.activity) {
+        out.push(`      ${C.cyn}now${C.r} ${p.activity}`);
+      }
       for (const sl of p.slices) {
         const mark = sl.checked ? "[x]" : "[ ]";
         const sha = sl.sha ? ` ${C.dim}(${sl.sha})${C.r}` : "";

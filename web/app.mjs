@@ -7,6 +7,26 @@ import { parseTranscript } from "/transcript.mjs";
 
 const POLL_MS = 3000;
 const STALE_MS = 10000;
+const TICK_MS = 1000; // refresh the "time on step" timers between polls
+
+// Compact elapsed: 9s · 4m12s · 1h03m. Mirrors fmtDur in progress.mjs.
+function fmtDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${String(m % 60).padStart(2, "0")}m`;
+}
+// `since` is the stream file's mtime (ms); elapsed ticks live, client-side.
+const fmtElapsed = (since) => (since ? fmtDur(Date.now() - since) : "");
+// Compact token count: 920 · 12.3k · 1.2M. Mirrors fmtTokens in progress.mjs.
+function fmtTokens(n) {
+  if (n == null) return "";
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
 
 // ── state ─────────────────────────────────────────────────────────────────
 const state = {
@@ -125,7 +145,18 @@ function agentCard(p, i) {
             <div class="bar"><i style="width:${pct}%"></i></div>`
         : nothing}
       ${p.deps && p.deps.length ? html`<div class="deps">deps: ${p.deps.join(", ")}</div>` : nothing}
-      ${p.state === "running" && p.activity ? html`<div class="now">› ${p.activity}</div>` : nothing}
+      ${p.state === "running" && p.step
+        ? html`<div class="now">
+            <span class="now-label">${p.step.label}</span>
+            ${p.step.detail ? html`<span class="now-detail">${p.step.detail}</span>` : nothing}
+            <span class="now-elapsed">${fmtElapsed(p.step.since)}</span>
+            ${p.step.tokens != null
+              ? html`<span class="now-tokens">${fmtTokens(p.step.tokens)} tok</span>`
+              : nothing}
+          </div>`
+        : p.state === "running" && p.activity
+          ? html`<div class="now"><span class="now-detail">${p.activity}</span></div>`
+          : nothing}
       ${p.state === "running" || p.state === "blocked"
         ? html`<div class="actions">
             ${p.state === "running"
@@ -195,6 +226,16 @@ function renderDetail() {
     html`
       <div class="dhead">
         <div class="id">${state.selectedId} <span class="state-${p ? p.state : ""}">${p ? p.state : ""}</span></div>
+        ${p && p.state === "running" && p.step
+          ? html`<div class="now dhead-now">
+              <span class="now-label">${p.step.label}</span>
+              ${p.step.detail ? html`<span class="now-detail">${p.step.detail}</span>` : nothing}
+              <span class="now-elapsed">${fmtElapsed(p.step.since)}</span>
+            ${p.step.tokens != null
+              ? html`<span class="now-tokens">${fmtTokens(p.step.tokens)} tok</span>`
+              : nothing}
+            </div>`
+          : nothing}
         ${p
           ? html`<div class="sub">
                 ${p.title || ""}${p.lastCommit ? html` · tip ${p.lastCommit}` : nothing}
@@ -299,6 +340,12 @@ async function tick() {
 renderAll();
 tick();
 setInterval(tick, POLL_MS);
+// Advance the "time on step" timers each second between polls — re-renders the
+// agent cards from the cached model only (no network, no transcript re-parse).
+setInterval(() => {
+  if (document.hidden) return;
+  if (state.model && state.model.summary && state.model.summary.running) renderAgents();
+}, TICK_MS);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) tick();
 });
