@@ -10,9 +10,9 @@ test surfaces a real bug, fix the smallest thing and note it in §Resume notes.
 
 ## Status
 
-- [ ] 05.1 — unit coverage for the delta/encoder contract
-- [ ] 05.2 — end-to-end SSE smoke test
-- [ ] 05.3 — bandwidth assertion + manual run notes
+- [x] 05.1 — unit coverage for the delta/encoder contract (2471f6e)
+- [x] 05.2 — end-to-end SSE smoke test (315d21f)
+- [x] 05.3 — bandwidth assertion + manual run notes (f3e0b3a)
 
 ## Goal
 
@@ -54,3 +54,31 @@ again), and reconnect resyncs cleanly.
 - **05.3 — bandwidth assertion + notes.** Incremental-bytes assertion and the
   manual-run section; flip the manifest `**Status:**` to `complete` is the
   driver's job, not the worker's. One commit.
+
+## Manual verification
+
+The automated suite (`node --test web/*.test.mjs`) covers the protocol; this
+section is the human's eye-check that the dashboard actually behaves like the
+new pull-from-server model. Run against a live `run-loop.sh` (or any run that
+is producing transcripts):
+
+1. `node web-server.mjs` — starts the dashboard on `http://127.0.0.1:4317`.
+2. Open the dashboard in a browser; click into a phase that's `[running]` so
+   the right-hand panel is following its transcript.
+3. Open DevTools → Network → filter on `stream`. You should see **one**
+   `text/event-stream` request with status `200`, transfer staying open for
+   the lifetime of the tab — not a recurring `/api/progress` or
+   `/api/transcript` row every few seconds. (The legacy endpoints now 404; if
+   you see retries hammering them, the browser cached an old `app.mjs`.)
+4. Watch the EventStream tab on that request: each new file change appears as
+   a single SSE record. `progress` rows are full-snapshot JSON; `transcript`
+   rows carry only the bytes that just appeared on disk (you can confirm by
+   `wc -c .claudopilot/<id>.transcript.md` before/after).
+5. Network-tab "throttle: offline" then "online" closes the connection;
+   EventSource auto-reconnects and the server replays a fresh `snapshot`. The
+   UI should re-render the current state with no manual refresh.
+
+Bandwidth check: the bytes flowing over the long-lived stream should
+approximately equal the bytes being appended to the watched transcript file
+over the same window — i.e., the regression guard the `stream.e2e.test.mjs`
+bandwidth test asserts in code, but visible at a glance in the Network panel.
