@@ -451,26 +451,61 @@ commit_build_log() {  # id  (must run from the BASE_BRANCH checkout, before clea
 
 # A merge whose ONLY conflicts are in generated/derived files is auto-resolvable:
 # regenerate those files from the merged tree, stage them, and complete the merge.
-# Today that's the pnpm lockfile — every package-adding phase rewrites it, so two
-# phases that ran in parallel ALWAYS collide there, even when their source is
+# In practice that's the package-manager lockfile — every package-adding phase rewrites
+# it, so two phases that ran in parallel ALWAYS collide there, even when their source is
 # package-disjoint. The lock is fully determined by the merged package.json set, so
 # regenerating is the correct resolution (not a textual merge). A conflict touching
 # ANY non-derived file means the streams weren't disjoint — that still parks.
-# Tunable via DERIVED_CONFLICT_FILES (ERE) and LOCKFILE_REGEN_CMD.
+#
+# This is package-manager-agnostic out of the box: pnpm, npm, yarn, and bun lockfiles
+# are all recognized and regenerated with the matching command, inferred from which
+# lockfile is in conflict. Tunable via DERIVED_CONFLICT_FILES (ERE) — a conflict is only
+# auto-resolved if every conflicted path matches it — and LOCKFILE_REGEN_CMD, which when
+# set overrides the inferred regen command.
+
+# Every common JS lockfile, not just pnpm's. Each package-adding phase rewrites its
+# lockfile, so parallel phases collide there regardless of package manager.
+DERIVED_CONFLICT_FILES_DEFAULT='^(pnpm-lock\.yaml|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|bun\.lockb?)$'
+
+# Map a conflicted lockfile to the command that regenerates it from the (already merged)
+# package.json set alone — no full install, no network where the manager supports it.
+lockfile_regen_cmd_for() {
+  case "${1##*/}" in
+    pnpm-lock.yaml)                        echo 'pnpm install --lockfile-only' ;;
+    package-lock.json|npm-shrinkwrap.json) echo 'npm install --package-lock-only' ;;
+    yarn.lock)                             echo 'yarn install --mode=update-lockfile' ;;
+    bun.lock|bun.lockb)                    echo 'bun install' ;;
+  esac
+}
+
 # Returns 0 if fully resolved + committed, 1 otherwise (caller aborts + parks).
 resolve_derived_conflicts() {
-  local id="$1" unresolved derived_re f
+  local id="$1" unresolved derived_re f regen
   unresolved=$(git diff --name-only --diff-filter=U)
   [[ -n "$unresolved" ]] || return 1
-  derived_re="${DERIVED_CONFLICT_FILES:-^pnpm-lock\.yaml$}"
+  derived_re="${DERIVED_CONFLICT_FILES:-$DERIVED_CONFLICT_FILES_DEFAULT}"
   # Bail if ANY conflicted path is not a derived file. NB: capture-and-test rather
   # than `grep -qv` — ugrep (a grep drop-in some hosts ship) mishandles -q+-v.
   [[ -n "$(grep -vE "$derived_re" <<<"$unresolved")" ]] && return 1
-  log "  [$id] derived-only merge conflict; regenerating: $(tr '\n' ' ' <<<"$unresolved")"
+  # Regen command: an explicit override wins; otherwise infer it from the lockfile(s)
+  # in conflict so npm/yarn/bun/pnpm all work without per-repo configuration.
+  regen="${LOCKFILE_REGEN_CMD:-}"
+  if [[ -z "$regen" ]]; then
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      regen="$(lockfile_regen_cmd_for "$f")"
+      [[ -n "$regen" ]] && break
+    done <<<"$unresolved"
+  fi
+  if [[ -z "$regen" ]]; then
+    log "  [$id] derived-only merge conflict but no lockfile regen command for: $(tr '\n' ' ' <<<"$unresolved")"
+    return 1   # matched DERIVED_CONFLICT_FILES but unknown manager -> set LOCKFILE_REGEN_CMD
+  fi
+  log "  [$id] derived-only merge conflict; regenerating ($regen): $(tr '\n' ' ' <<<"$unresolved")"
   # Clear the conflict markers (take base's copy) so the regen tool reads a valid
   # file, then regenerate from the merged manifests.
   while IFS= read -r f; do [[ -n "$f" ]] && git checkout --ours -- "$f" >>"$LOG_FILE" 2>&1; done <<<"$unresolved"
-  ( eval "${LOCKFILE_REGEN_CMD:-pnpm install --lockfile-only}" ) >>"$LOG_FILE" 2>&1 || return 1
+  ( eval "$regen" ) >>"$LOG_FILE" 2>&1 || return 1
   while IFS= read -r f; do [[ -n "$f" ]] && git add -- "$f" >>"$LOG_FILE" 2>&1; done <<<"$unresolved"
   [[ -n "$(git diff --name-only --diff-filter=U)" ]] && return 1   # still unresolved -> bail
   git commit --no-edit >>"$LOG_FILE" 2>&1 || return 1

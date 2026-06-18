@@ -611,6 +611,8 @@ All overridable in env at launch time.
 | `MAX_PARALLEL` | `3` | Max phases running concurrently (each a `claude -p` worker in its own git worktree). Tune to cores and rate-limit headroom. |
 | `GATE_CMD` | `pnpm typecheck && lint && test && check-circular && i18n:check` | Per-phase quality gate; must match `worker.md` and the pre-commit hook. |
 | `WORKTREE_PREPARE_CMD` | `pnpm install --frozen-lockfile` | Run in each new worktree so the isolated checkout can build (cheap via pnpm's store). |
+| `DERIVED_CONFLICT_FILES` | every common JS lockfile (pnpm/npm/yarn/bun) | ERE of "derived" paths. A merge whose conflicts are *all* derived auto-resolves by regenerating them; any other conflicting path parks (concurrent streams must be package-disjoint). |
+| `LOCKFILE_REGEN_CMD` | inferred from the conflicting lockfile | Command that regenerates the lockfile from the merged `package.json` set. Defaults are per-manager (`npm install --package-lock-only`, `pnpm install --lockfile-only`, `yarn install --mode=update-lockfile`, `bun install`); set this to override. |
 | `POLL_SECONDS` | `5` | Scheduler poll interval between reap/launch passes. |
 | `MAX_ITER` | `2000` | Hard ceiling on scheduling passes (not phases). |
 | `MAX_SUPERVISOR_ATTEMPTS_PER_PHASE` | `2` | How many times the supervisor can step in on one phase before it is parked/failed. |
