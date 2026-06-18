@@ -160,11 +160,17 @@ if [[ "${1:-}" == "--shell" ]]; then
 fi
 
 echo "[run-in-docker] Launching $IMAGE_TAG (Ctrl-C to stop)..."
+# Allocate a TTY (-t) only when stdin is one. Hard-coding -it makes unattended
+# runs (nohup, CI, cron, `claudopilot run >log 2>&1 &`) fail immediately with
+# "cannot attach stdin to a TTY-enabled container because stdin is not a terminal".
+# Keep -i either way so an interactive terminal still behaves as before.
+TTY_FLAGS=(-i)
+[[ -t 0 ]] && TTY_FLAGS=(-i -t)
 # --ipc=host  : Chromium needs host IPC to avoid /dev/shm OOM crashes
 #               during Vitest browser-mode tests. Same requirement as
 #               the sibling Dockerfile's CMD-line note.
 # --shm-size  : Belt-and-braces for browsers if --ipc=host is unavailable.
-docker run --rm -it --init \
+docker run --rm "${TTY_FLAGS[@]}" --init \
   --name "$IMAGE_TAG" \
   --ipc=host \
   --shm-size=2g \
