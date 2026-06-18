@@ -38,6 +38,7 @@ const ENGINE_FILES = [
   "progress.mjs",
   "progress.sh",
   "web-server.mjs",
+  "web/events.mjs",
   "web/index.html",
   "web/app.mjs",
   "web/transcript.mjs",
