@@ -21,8 +21,6 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     configPath: "/repo/claudopilot.config.sh",
     roadmapDir: "roadmap",
     manifest: "/repo/roadmap/EXECUTION-MANIFEST.md",
-    renderStream: "",
-    renderStreamOpencode: "",
     agentDriver: "claude",
     agentModel: "",
     promptFile: "/repo/prompts/worker.md",

@@ -18,8 +18,6 @@ function cfg(overrides: Partial<Config> = {}): Config {
     configPath: "",
     roadmapDir: "roadmap",
     manifest: "/repo/roadmap/EXECUTION-MANIFEST.md",
-    renderStream: "",
-    renderStreamOpencode: "",
     agentDriver: "claude",
     agentModel: "",
     promptFile: "/repo/prompts/worker.md",

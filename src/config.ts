@@ -83,15 +83,6 @@ export async function loadConfig(
       path.join(repoRoot, roadmapDir, "EXECUTION-MANIFEST.md"),
     ),
 
-    renderStream: pick(
-      "RENDER_STREAM",
-      path.join(repoRoot, "claudopilot", "render-stream.mjs"),
-    ),
-    renderStreamOpencode: pick(
-      "RENDER_STREAM_OPENCODE",
-      path.join(repoRoot, "claudopilot", "render-stream-opencode.mjs"),
-    ),
-
     agentDriver: pick("AGENT_DRIVER", "claude"),
     agentModel: pickRaw("AGENT_MODEL", ""),
 

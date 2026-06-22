@@ -37,9 +37,6 @@ export interface Config {
   roadmapDir: string;
   manifest: string;
 
-  renderStream: string;
-  renderStreamOpencode: string;
-
   agentDriver: string;
   agentModel: string;
 
