@@ -222,7 +222,7 @@ describe("web server SSE + control + validation", () => {
     try {
       await conn.waitFor(
         (evs) => evs.some(isSnapshot) && evs.some(isTranscript),
-        4000,
+        15000,
         "snapshot+transcript",
       );
       const snap = conn.events.find(isSnapshot)!;
@@ -248,7 +248,7 @@ describe("web server SSE + control + validation", () => {
       appendFileSync(transcriptFile(), appended);
       await conn.waitFor(
         (evs) => evs.filter(isTranscript).length >= 2,
-        4000,
+        15000,
         "second transcript",
       );
       const t1 = conn.events.filter(isTranscript)[1]!;

@@ -13,6 +13,7 @@ import {
   type RunInDockerOptions,
 } from "./runInDocker.js";
 import { buildArgs } from "../docker.js";
+import * as path from "node:path";
 
 // ── helpers ─────────────────────────────────────────────────────────────
 
@@ -27,9 +28,19 @@ function freePort(): NetProbe {
   return { portInUse: async () => false };
 }
 
+const HOME = "/home/eric";
+// resolveAuth/resolveHostMounts build host-side mount sources with path.join, so
+// they use the host separator. Derive the fixtures the same way to stay correct
+// on Windows as well as POSIX.
+const CLAUDE_DIR = path.join(HOME, ".claude");
+const CLAUDE_JSON = path.join(HOME, ".claude.json");
+const GITCONFIG = path.join(HOME, ".gitconfig");
+const SSH = path.join(HOME, ".ssh");
+const GH = path.join(HOME, ".config", "gh");
+
 const baseOpts: Omit<RunInDockerOptions, "fs" | "net"> = {
   repoRoot: "/home/eric/repo",
-  home: "/home/eric",
+  home: HOME,
   hostUid: 1000,
   hostGid: 1000,
   imageTag: "claudopilot-runner",
@@ -90,18 +101,15 @@ describe("resolveAuth — token mode", () => {
     const r = resolveAuth({
       ...baseOpts,
       anthropicApiKey: "sk-ant-x",
-      fs: mkFs(
-        new Set(["/home/eric/.claude.json"]),
-        new Set(["/home/eric/.claude"]),
-      ),
+      fs: mkFs(new Set([CLAUDE_JSON]), new Set([CLAUDE_DIR])),
       net: freePort(),
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.decision.kind).toBe("token");
     expect(r.decision.mounts).toEqual([
-      { source: "/home/eric/.claude", target: "/home/runner/.claude" },
-      { source: "/home/eric/.claude.json", target: "/home/runner/.claude.json" },
+      { source: CLAUDE_DIR, target: "/home/runner/.claude" },
+      { source: CLAUDE_JSON, target: "/home/runner/.claude.json" },
     ]);
   });
 
@@ -122,18 +130,15 @@ describe("resolveAuth — interactive mode", () => {
   it("requires both ~/.claude and ~/.claude.json", () => {
     const r = resolveAuth({
       ...baseOpts,
-      fs: mkFs(
-        new Set(["/home/eric/.claude.json"]),
-        new Set(["/home/eric/.claude"]),
-      ),
+      fs: mkFs(new Set([CLAUDE_JSON]), new Set([CLAUDE_DIR])),
       net: freePort(),
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.decision.kind).toBe("interactive");
     expect(r.decision.mounts).toEqual([
-      { source: "/home/eric/.claude", target: "/home/runner/.claude" },
-      { source: "/home/eric/.claude.json", target: "/home/runner/.claude.json" },
+      { source: CLAUDE_DIR, target: "/home/runner/.claude" },
+      { source: CLAUDE_JSON, target: "/home/runner/.claude.json" },
     ]);
   });
 
@@ -164,24 +169,21 @@ describe("resolveHostMounts", () => {
   it("emits gitconfig + ssh + gh in stable order, with :ro on the read-only ones", () => {
     const m = resolveHostMounts({
       ...baseOpts,
-      fs: mkFs(
-        new Set(["/home/eric/.gitconfig"]),
-        new Set(["/home/eric/.ssh", "/home/eric/.config/gh"]),
-      ),
+      fs: mkFs(new Set([GITCONFIG]), new Set([SSH, GH])),
       net: freePort(),
     });
     expect(m).toEqual([
       {
-        source: "/home/eric/.gitconfig",
+        source: GITCONFIG,
         target: "/home/runner/.gitconfig",
         readonly: true,
       },
       {
-        source: "/home/eric/.ssh",
+        source: SSH,
         target: "/home/runner/.ssh",
         readonly: true,
       },
-      { source: "/home/eric/.config/gh", target: "/home/runner/.config/gh" },
+      { source: GH, target: "/home/runner/.config/gh" },
     ]);
   });
 
@@ -276,7 +278,7 @@ describe("planIsolated", () => {
   it("accepts interactive-login mode (only ~/.claude present)", () => {
     const r = planIsolated({
       ...baseOpts,
-      fs: mkFs(new Set(), new Set(["/home/eric/.claude"])),
+      fs: mkFs(new Set(), new Set([CLAUDE_DIR])),
       net: freePort(),
     });
     expect("error" in r).toBe(false);

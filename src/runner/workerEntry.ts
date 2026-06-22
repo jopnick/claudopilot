@@ -84,12 +84,16 @@ export function capturePaths(
   workdir: string,
   phaseId: string,
 ): WorkerCapturePaths {
-  const dir = path.join(workdir, ".claudopilot");
+  // These are CONTAINER paths (workdir is /work inside the Linux worker), so
+  // always join POSIX-style — never the host's `path.sep`. At runtime this code
+  // runs in the container (posix anyway); using path.posix keeps it correct when
+  // exercised from a Windows host (tests).
+  const dir = path.posix.join(workdir, ".claudopilot");
   return {
-    log: path.join(dir, `${phaseId}.log`),
-    stream: path.join(dir, `${phaseId}.stream.jsonl`),
-    transcript: path.join(dir, `${phaseId}.transcript.md`),
-    prompt: path.join(dir, `${phaseId}.prompt.txt`),
+    log: path.posix.join(dir, `${phaseId}.log`),
+    stream: path.posix.join(dir, `${phaseId}.stream.jsonl`),
+    transcript: path.posix.join(dir, `${phaseId}.transcript.md`),
+    prompt: path.posix.join(dir, `${phaseId}.prompt.txt`),
   };
 }
 
@@ -218,7 +222,7 @@ export async function workerEntry(
   }
 
   const paths = capturePaths(opts.workdir, opts.phaseId);
-  await fsx.ensureDir(path.dirname(paths.log));
+  await fsx.ensureDir(path.posix.dirname(paths.log));
   await fsx.appendFile(
     paths.transcript,
     transcriptHeader(opts.phaseId, opts.supervisor),

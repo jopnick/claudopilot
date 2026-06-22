@@ -154,18 +154,22 @@ describe("prompt suffixes", () => {
 });
 
 describe("setCapturePaths", () => {
+  // These are HOST paths the orchestrator reads via the bind-mount, so they use
+  // the host's path separator — build expectations with path.join so the
+  // assertions hold on Windows as well as POSIX.
   it("uses runDir in default mode", () => {
     const cfg = baseConfig();
     const p = setCapturePaths("phase-04", cfg, "/anywhere");
-    expect(p.log).toBe("/repo/.claudopilot/phase-04.log");
-    expect(p.stream).toBe("/repo/.claudopilot/phase-04.stream.jsonl");
-    expect(p.transcript).toBe("/repo/.claudopilot/phase-04.transcript.md");
+    expect(p.log).toBe(path.join(cfg.runDir, "phase-04.log"));
+    expect(p.stream).toBe(path.join(cfg.runDir, "phase-04.stream.jsonl"));
+    expect(p.transcript).toBe(path.join(cfg.runDir, "phase-04.transcript.md"));
   });
 
   it("uses the worktree's .claudopilot dir in isolated mode", () => {
     const cfg = baseConfig({ isolated: true });
-    const p = setCapturePaths("phase-04", cfg, "/clones/phase-04");
-    expect(p.log).toBe("/clones/phase-04/.claudopilot/phase-04.log");
+    const wt = path.join("/clones", "phase-04");
+    const p = setCapturePaths("phase-04", cfg, wt);
+    expect(p.log).toBe(path.join(wt, ".claudopilot", "phase-04.log"));
   });
 });
 

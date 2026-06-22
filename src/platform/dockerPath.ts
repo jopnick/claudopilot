@@ -13,7 +13,7 @@
  * exercised in CI from a Windows runner before WSL2 is wired up.
  */
 
-import { sep, isAbsolute } from "node:path";
+import { posix } from "node:path";
 
 export interface DockerPathOptions {
   /** Override platform. Defaults to `process.platform`. Test seam. */
@@ -44,8 +44,10 @@ export function toContainerPath(hostPath: string, opts: DockerPathOptions = {}):
 export function isMountablePath(p: string, opts: DockerPathOptions = {}): boolean {
   if (!p) return false;
   const plat = opts.platform ?? process.platform;
+  // Decide by the *target* platform, not the host's ambient `path` flavor —
+  // otherwise this misclassifies POSIX paths when the engine runs on Windows.
   if (plat === "win32") {
     return /^[a-zA-Z]:[\\/]/.test(p);
   }
-  return isAbsolute(p) && sep === "/";
+  return posix.isAbsolute(p);
 }
