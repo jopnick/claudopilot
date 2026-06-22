@@ -276,10 +276,11 @@ describe("launch — isolated mode", () => {
     const r = runCalls[0]!;
     expect(r.name).toBe("cp-w-phase-z");
     expect(r.image).toBe("claudopilot-runner");
-    expect(r.cmd).toEqual(["bash", "/work/claudopilot/worker-entry.sh"]);
+    expect(r.cmd).toEqual(["claudopilot", "__worker"]);
     expect(r.mounts.some((m) => m.container === "/work" && m.host === wt)).toBe(true);
     expect(r.env["CLAUDOPILOT_PHASE"]).toBe("phase-z");
     expect(r.env["GATE_CMD"]).toBe("pnpm test");
+    expect(r.env["AGENT_DRIVER"]).toBe("claude");
 
     const written = await readFile(path.join(wt, ".claudopilot", "phase-z.prompt.txt"), "utf8");
     expect(written).toContain("WORKER PROMPT BODY");

@@ -32,6 +32,8 @@ import {
   type RunInDockerOptions,
 } from "./runner/runInDocker.js";
 import { runDriver } from "./orchestrator/index.js";
+import { mainEntry } from "./runner/workerEntry.js";
+import { makeCaptureRunner } from "./runner/captureRunner.js";
 import { promises as fsp } from "node:fs";
 
 // ── PKG_ROOT resolution ────────────────────────────────────────────────────
@@ -515,6 +517,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return await cmdProgress(rest);
     case "web":
       return await cmdWeb(rest);
+    case "__worker":
+      // Hidden, internal: the in-container per-phase entrypoint. The
+      // orchestrator launches `claudopilot __worker` inside each isolated
+      // worker container; it reads its inputs from the forwarded env
+      // (CLAUDOPILOT_PHASE, WORKTREE_PREPARE_CMD, SUPERVISOR_MODE,
+      // CLAUDOPILOT_RESUME_SID, AGENT_DRIVER, AGENT_MODEL).
+      return await mainEntry(makeCaptureRunner(process.env), process.env);
     case "-v":
     case "--version":
       writeOut(pkg().version);

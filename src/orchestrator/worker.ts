@@ -302,7 +302,9 @@ async function launchIsolated(
     CLAUDOPILOT_PHASE: id,
     GATE_CMD: config.gateCmd,
     WORKTREE_PREPARE_CMD: config.worktreePrepareCmd,
+    AGENT_DRIVER: config.agentDriver,
   };
+  if (config.agentModel) env["AGENT_MODEL"] = config.agentModel;
   if (supervisorMode) env["SUPERVISOR_MODE"] = supervisorMode;
   if (resumeSid) env["CLAUDOPILOT_RESUME_SID"] = resumeSid;
 
@@ -320,7 +322,10 @@ async function launchIsolated(
       shmSize: "2g",
       mounts,
       env,
-      cmd: ["bash", "/work/claudopilot/worker-entry.sh"],
+      // The engine is baked into the worker image (see Dockerfile), so the
+      // per-phase entrypoint is the bundled CLI's hidden __worker subcommand —
+      // no vendored bash. Inputs arrive via the forwarded env above.
+      cmd: ["claudopilot", "__worker"],
     });
     return { code: r.code, signal: r.signal };
   })();
