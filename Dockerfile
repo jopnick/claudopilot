@@ -1,13 +1,15 @@
 # claudopilot/Dockerfile — autonomous Claude Code execution environment.
 #
-# Builds a Playwright + pnpm@9.0.0 + git + gh + Claude Code image,
-# ready to drive claudopilot/run-loop.sh against a mounted /work tree.
-# The Playwright base is here because the host project's Vitest browser-
-# mode tests run real Chromium / Firefox / WebKit; if your project
-# doesn't need that, swap to a smaller node-based base image.
+# Builds a Playwright + pnpm@9.0.0 + git + gh + Claude Code image with the
+# claudopilot CLI baked in. The host orchestrator launches one of these per
+# phase, running `claudopilot __worker` against the per-phase clone mounted at
+# /work — no bash engine, nothing vendored into the target repo. The Playwright
+# base is here because the host project's Vitest browser-mode tests run real
+# Chromium / Firefox / WebKit; if your project doesn't need that, swap to a
+# smaller node-based base image.
 #
-# Build:   docker build -t claudopilot-runner -f claudopilot/Dockerfile .
-# Launch:  claudopilot run                    (handles build + mounts + flags)
+# Build context is the claudopilot PACKAGE root (so `COPY dist/` resolves);
+# `claudopilot run` builds it for you (handles context + mounts + flags).
 #
 # This image is for long-running autonomous execution: Claude Code, gh,
 # git push over SSH, safe.directory pre-trusted for /work, and an
@@ -58,6 +60,17 @@ RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 
 # Claude Code CLI.
 RUN npm install -g @anthropic-ai/claude-code
+
+# ---- Bake the claudopilot engine in -----------------------------------
+#
+# The bundled CLI (tsup output — dependency-inlined, no node_modules needed)
+# is copied in and exposed as `claudopilot` on PATH. The orchestrator runs
+# `claudopilot __worker` as each worker container's entrypoint, so there is
+# no bash engine to vendor into the target repo.
+COPY dist/ /opt/claudopilot/dist/
+COPY package.json /opt/claudopilot/package.json
+RUN printf '#!/bin/sh\nexec node /opt/claudopilot/dist/cli.js "$@"\n' > /usr/local/bin/claudopilot \
+ && chmod +x /usr/local/bin/claudopilot
 
 # Trust the mounted /work directory at the SYSTEM level. Must be
 # --system (not --global), because the engine mounts the host's

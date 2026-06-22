@@ -1,28 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 import {
   renderOpencodeEvent,
   renderOpencodeTranscript,
   OpencodeRenderStream,
 } from "./renderOpencode.js";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, "..", "..");
-
 function ndjson(events: unknown[]): string {
   return events.map((e) => JSON.stringify(e)).join("\n") + "\n";
-}
-
-function bashRender(input: string): string {
-  const r = spawnSync(
-    process.execPath,
-    [resolve(REPO_ROOT, "render-stream-opencode.mjs")],
-    { input, encoding: "utf8" },
-  );
-  if (r.status !== 0) throw new Error(`renderer exit ${r.status}: ${r.stderr}`);
-  return r.stdout;
 }
 
 describe("renderOpencodeEvent", () => {
@@ -171,8 +155,8 @@ describe("OpencodeRenderStream", () => {
   });
 });
 
-describe("parity with render-stream-opencode.mjs (golden)", () => {
-  it("matches byte-for-byte on a representative session", () => {
+describe("golden: representative session", () => {
+  it("renders a full session deterministically", () => {
     const events = [
       {
         type: "step_start",
@@ -223,7 +207,38 @@ describe("parity with render-stream-opencode.mjs (golden)", () => {
     ];
     const input = ndjson(events) + "not-json\n";
     const ts = renderOpencodeTranscript(input);
-    const bash = bashRender(input);
-    expect(ts).toBe(bash);
+    expect(ts).toMatchInlineSnapshot(`
+      "=== opencode session ses-1 | driver opencode ===
+
+      [thinking]
+        thinking
+        more
+
+      [assistant]
+      Hello.
+
+      -> tool: bash
+           {
+             "command": "ls"
+           }
+
+      <- result:
+           a.txt
+           b.txt
+
+      -> tool: bash
+           {
+             "command": "false"
+           }
+
+      <- result (error):
+           exit 1
+
+      === result: reason=end_turn | cost=$0.0050 | tokens=10/5 ===
+      <- result (error):
+           APIError: overloaded
+
+      "
+    `);
   });
 });

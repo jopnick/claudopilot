@@ -1,12 +1,12 @@
 /**
- * Shared scaffolding for the bash-vs-TS parity harness.
+ * Shared scaffolding for the TS engine end-to-end tests.
  *
- * Each test runs the SAME fixture roadmap through both engines in two
- * sibling tmp git repos, against a stub `claude` CLI on PATH. The
- * snapshot returned by `runEngine()` covers everything the phase doc's
- * parity contract names: process exit code, the manifest state-change
- * sequence, the final `**Status:**` line, and the capture/build-log
- * file layout.
+ * Each test runs a fixture roadmap through the real `runDriver()` in a tmp
+ * git repo, in host-process mode (no Docker), against a stub `claude` CLI on
+ * PATH. The snapshot returned by `runTsEngine()` covers the engine's
+ * observable contract: process exit code, the manifest state-change sequence,
+ * the final `**Status:**` line, and the capture/build-log file layout. No
+ * bash engine is involved — the orchestrator drives everything in TS.
  */
 
 import { promises as fs } from "node:fs";
@@ -80,18 +80,6 @@ export async function writeFixture(
   await fs.writeFile(
     path.join(prompts, "supervisor.md"),
     "# parity supervisor prompt\nRecover the phase by renaming DONE_.\n",
-  );
-
-  // Bash engine consumes the renderer as a subprocess; copy it in so the
-  // bash run is self-contained. The TS engine renders in-process and
-  // doesn't need this file.
-  await fs.copyFile(
-    path.join(PKG_ROOT, "render-stream.mjs"),
-    path.join(claudopilot, "render-stream.mjs"),
-  );
-  await fs.copyFile(
-    path.join(PKG_ROOT, "render-stream-opencode.mjs"),
-    path.join(claudopilot, "render-stream-opencode.mjs"),
   );
 
   const config = [
@@ -263,31 +251,6 @@ export interface EngineResult {
   stateCommitLog: string[];
   /** Capture / build-log file layout, sorted relative paths. */
   artifacts: string[];
-}
-
-/** Run `bash run-loop.sh` against the fixture and return a comparable snapshot. */
-export async function runBashEngine(
-  setup: RepoSetup,
-  binDir: string,
-): Promise<EngineResult> {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    PATH: `${binDir}:${process.env["PATH"] ?? ""}`,
-    REPO_ROOT: setup.repoDir,
-    BASE_BRANCH: setup.baseBranch,
-    BASE_BRANCH_EXPLICIT: "1",
-    HOME: process.env["HOME"] ?? "/tmp",
-    // Prevent stray env from the host engine bleeding in.
-    CLAUDOPILOT_ISOLATED: "0",
-    AGENT_DRIVER: "claude",
-    POLL_SECONDS: "1",
-    MAX_PARALLEL: "1",
-    MAX_ITER: "200",
-    MAX_SUPERVISOR_ATTEMPTS_PER_PHASE: "2",
-  };
-  const runLoop = path.join(PKG_ROOT, "run-loop.sh");
-  const r = await run("bash", [runLoop], setup.repoDir, env);
-  return await snapshot(setup, r.code ?? 1);
 }
 
 /** Run the TS `runDriver()` against the fixture and return a comparable snapshot. */

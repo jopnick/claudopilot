@@ -26,7 +26,6 @@ import { runOnce, runWatch, runFollow } from "./progress/render.js";
 import { startDashboardServer } from "./web/server.js";
 import {
   buildSpec,
-  planDefault,
   planShell,
   planIsolated,
   type RunInDockerOptions,
@@ -55,19 +54,12 @@ function pkg(): PackageJson {
 // runtime: the in-container loop + worker-entry, render-stream renderers,
 // the in-container web server, browser assets, the runner Dockerfile, and
 // the prompt templates.
+// Engine files vendored into the target repo's ./claudopilot/ on `init`.
+// The runtime engine is now baked into the worker image (the bundled CLI) and
+// the host CLI — nothing executable is vendored. We still vendor the base
+// prompt contract so `config.promptFile` resolves and users can read/tune it;
+// the project overlay (worker.project.md) lands as a core project file.
 const ENGINE_FILES = [
-  "run-loop.sh",
-  "worker-entry.sh",
-  "render-stream.mjs",
-  "render-stream-opencode.mjs",
-  "web-server.mjs",
-  "web/index.html",
-  "web/app.mjs",
-  "web/events.mjs",
-  "web/transcript.mjs",
-  "web/styles.css",
-  "web/vendor/lit-html.js",
-  "Dockerfile",
   "prompts/worker.md",
   "prompts/supervisor.md",
 ];
@@ -197,9 +189,10 @@ function cmdInit(args: readonly string[]): number {
   const cwd = process.cwd();
   writeOut(`Scaffolding claudopilot into ${cwd}`);
 
-  // Engine: tool-managed, vendored under ./claudopilot/. Safe to re-vendor with
-  // --force; this is the only thing --force touches.
-  writeOut("\nEngine (vendored into ./claudopilot/):");
+  // Prompt contract: tool-managed, vendored under ./claudopilot/prompts/. Safe
+  // to re-vendor with --force; this is the only thing --force touches. (The
+  // executable engine is baked into the worker image + host CLI, not vendored.)
+  writeOut("\nPrompt contract (vendored into ./claudopilot/):");
   for (const rel of ENGINE_FILES) {
     copyFile(join(PKG_ROOT, rel), join(cwd, "claudopilot", rel), force);
   }
@@ -365,9 +358,10 @@ async function cmdWeb(args: readonly string[]): Promise<number> {
 // ── run ────────────────────────────────────────────────────────────────────
 
 async function cmdRun(args: readonly string[]): Promise<number> {
-  const isolated = args.includes("--isolated");
   const shell = args.includes("--shell");
-  if (isolated && shell) die("--isolated and --shell are mutually exclusive");
+  // `--isolated` used to select the host orchestrator over the in-container
+  // bash loop. The bash loop is gone — the host orchestrator is the only
+  // engine now — so the flag is accepted but a no-op.
 
   const repoRoot = process.cwd();
   const home = process.env["HOME"] ?? "";
@@ -378,6 +372,10 @@ async function cmdRun(args: readonly string[]): Promise<number> {
     home,
     hostUid: typeof process.getuid === "function" ? process.getuid() : 0,
     hostGid: typeof process.getgid === "function" ? process.getgid() : 0,
+    // The worker image bakes the engine in, so it's built from the package
+    // root (where dist/ + Dockerfile live), not the target repo.
+    context: PKG_ROOT,
+    dockerfile: join(PKG_ROOT, process.env["CLAUDOPILOT_DOCKERFILE"] ?? "Dockerfile"),
     ...(process.env["ANTHROPIC_API_KEY"]
       ? { anthropicApiKey: process.env["ANTHROPIC_API_KEY"] }
       : {}),
@@ -391,9 +389,9 @@ async function cmdRun(args: readonly string[]): Promise<number> {
   };
 
   const docker = new Docker();
-  // CLAUDOPILOT_SKIP_BUILD=1 lets CI / parity smokes pre-bake the worker
-  // image (e.g. with a stub `claude`) and reuse it without the engine
-  // overwriting that tag from the canonical Dockerfile.
+  // CLAUDOPILOT_SKIP_BUILD=1 lets CI / smoke tests pre-bake the worker image
+  // (e.g. with a stub `claude`) and reuse it without the engine overwriting
+  // that tag from the canonical Dockerfile.
   if (process.env["CLAUDOPILOT_SKIP_BUILD"] !== "1") {
     const buildR = await docker.build(buildSpec(opts));
     if (buildR.code !== 0) {
@@ -402,50 +400,52 @@ async function cmdRun(args: readonly string[]): Promise<number> {
     }
   }
 
-  if (isolated) {
-    const isoPlan = planIsolated(opts);
-    if ("ok" in isoPlan && isoPlan.ok === false) {
-      writeErr(isoPlan.error);
+  // `--shell`: drop into a bash shell inside the image (debugging the toolchain).
+  if (shell) {
+    const launchPlan = await planShell(opts);
+    if ("ok" in launchPlan && launchPlan.ok === false) {
+      writeErr(launchPlan.error);
       return 1;
     }
-    const plan = isoPlan as Exclude<typeof isoPlan, { ok: false }>;
+    const plan = launchPlan as Exclude<typeof launchPlan, { ok: false }>;
     for (const line of plan.diagnostics) writeOut(line);
-    // Start host-side dashboard if requested.
-    if (plan.startHostWeb) {
-      const config = await loadConfig(repoRoot, process.env);
-      const running = await startDashboardServer({
-        repoRoot,
-        manifestPath: config.manifest,
-        roadmapDir: resolve(repoRoot, config.roadmapDir),
-        webDir: join(PKG_ROOT, "web"),
-        port: opts.webPort ?? 4317,
-      });
-      const addr = running.address();
-      writeOut(`[claudopilot web] http://${addr.host}:${addr.port}`);
-    }
-    // Forward env overlay so child sub-systems pick it up.
-    for (const [k, v] of Object.entries(plan.envOverlay)) process.env[k] = v;
-    const config = await loadConfig(repoRoot, process.env);
-    const git = new Git({ cwd: repoRoot });
-    const baseBranch = (await git.currentBranch()) ?? "main";
-    const workerPrompt = await fsp.readFile(config.promptFile, "utf8");
-    const supervisorPrompt = await fsp.readFile(config.supervisorPromptFile, "utf8");
-    const code = await runDriver(
-      { git, docker: dockerLike(docker), log: writeOut },
-      { config, baseBranch, workerPrompt, supervisorPrompt },
-    );
-    return code;
+    const r = await docker.runContainer(plan.run);
+    return r.code ?? 1;
   }
 
-  const launchPlan = await (shell ? planShell(opts) : planDefault(opts));
-  if ("ok" in launchPlan && launchPlan.ok === false) {
-    writeErr(launchPlan.error);
+  // Default run: the host orchestrator drives the loop, launching one
+  // disposable worker container per phase (each a clone + `claudopilot __worker`).
+  const isoPlan = planIsolated(opts);
+  if ("ok" in isoPlan && isoPlan.ok === false) {
+    writeErr(isoPlan.error);
     return 1;
   }
-  const plan = launchPlan as Exclude<typeof launchPlan, { ok: false }>;
+  const plan = isoPlan as Exclude<typeof isoPlan, { ok: false }>;
   for (const line of plan.diagnostics) writeOut(line);
-  const r = await docker.runContainer(plan.run);
-  return r.code ?? 1;
+  // Forward env overlay so loadConfig + the orchestrator pick it up.
+  for (const [k, v] of Object.entries(plan.envOverlay)) process.env[k] = v;
+  const config = await loadConfig(repoRoot, process.env);
+  // Start host-side dashboard if requested.
+  if (plan.startHostWeb) {
+    const running = await startDashboardServer({
+      repoRoot,
+      manifestPath: config.manifest,
+      roadmapDir: resolve(repoRoot, config.roadmapDir),
+      webDir: join(PKG_ROOT, "web"),
+      port: opts.webPort ?? 4317,
+    });
+    const addr = running.address();
+    writeOut(`[claudopilot web] http://${addr.host}:${addr.port}`);
+  }
+  const git = new Git({ cwd: repoRoot });
+  const baseBranch = (await git.currentBranch()) ?? "main";
+  const workerPrompt = await fsp.readFile(config.promptFile, "utf8");
+  const supervisorPrompt = await fsp.readFile(config.supervisorPromptFile, "utf8");
+  const code = await runDriver(
+    { git, docker: dockerLike(docker), log: writeOut },
+    { config, baseBranch, workerPrompt, supervisorPrompt },
+  );
+  return code;
 }
 
 // ── DockerLike adapter ─────────────────────────────────────────────────────

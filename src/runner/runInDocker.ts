@@ -25,7 +25,6 @@ import {
   type Mount,
   type BuildSpec,
   type RunSpec,
-  type PortPublish,
 } from "../docker.js";
 
 // ── env probes (injected so tests can stub) ──────────────────────────────
@@ -89,8 +88,10 @@ export interface RunInDockerOptions {
   home: string;
   /** Image tag. Default "claudopilot-runner" (CLAUDOPILOT_IMAGE_TAG). */
   imageTag?: string;
-  /** Dockerfile path relative to repo root. Default "claudopilot/Dockerfile". */
+  /** Dockerfile path. Default "Dockerfile" (resolved against `context`). */
   dockerfile?: string;
+  /** Docker build context. Default ".". The engine passes the package root. */
+  context?: string;
   hostUid: number;
   hostGid: number;
   /** ANTHROPIC_API_KEY. Empty/undefined → interactive-login mode required. */
@@ -148,8 +149,11 @@ export interface IsolatedPlan {
 export function buildSpec(opts: RunInDockerOptions): BuildSpec {
   return {
     tag: opts.imageTag ?? "claudopilot-runner",
-    dockerfile: opts.dockerfile ?? "claudopilot/Dockerfile",
-    context: ".",
+    // Both default to the engine package: the image bakes the bundled CLI in
+    // (see Dockerfile `COPY dist/`), so the build context is the package root,
+    // not the target repo. The repo arrives at runtime via the /work mount.
+    dockerfile: opts.dockerfile ?? "Dockerfile",
+    context: opts.context ?? ".",
     buildArgs: {
       HOST_UID: String(opts.hostUid),
       HOST_GID: String(opts.hostGid),
@@ -255,84 +259,32 @@ export function defaultRunEnv(): RunSpec["env"] {
   ];
 }
 
-// ── loop command (the bash -c body for default mode) ────────────────────
-
-export interface LoopCmdInput {
-  webPublished: boolean;
-  webPort: number;
-}
-
-export function composeLoopCmd(input: LoopCmdInput): string[] {
-  if (input.webPublished) {
-    return [
-      "bash",
-      "-c",
-      `cd /work && (CLAUDOPILOT_WEB_HOST=0.0.0.0 node claudopilot/web-server.mjs --port ${input.webPort} >/tmp/claudopilot-web.log 2>&1 &) ; bash claudopilot/run-loop.sh`,
-    ];
-  }
-  return ["bash", "-c", "cd /work && bash claudopilot/run-loop.sh"];
-}
-
 export function shellCmd(): string[] {
   return ["bash"];
 }
 
-// ── plan default / shell / isolated ─────────────────────────────────────
+// ── plan shell / isolated ───────────────────────────────────────────────
 
-export async function planDefault(
-  opts: RunInDockerOptions,
-): Promise<LaunchPlan | { ok: false; error: string }> {
-  return planLaunch(opts, "default");
-}
-
+/**
+ * `--shell`: drop into an interactive bash shell inside the runner image with
+ * the repo bind-mounted at /work — for poking at the toolchain/environment.
+ * The autonomous loop itself runs via {@link planIsolated} + the host driver;
+ * shell mode never publishes the dashboard.
+ */
 export async function planShell(
   opts: RunInDockerOptions,
-): Promise<LaunchPlan | { ok: false; error: string }> {
-  return planLaunch(opts, "shell");
-}
-
-async function planLaunch(
-  opts: RunInDockerOptions,
-  mode: "default" | "shell",
 ): Promise<LaunchPlan | { ok: false; error: string }> {
   const auth = resolveAuth(opts);
   if (!auth.ok) return { ok: false, error: auth.error };
 
   const diagnostics: string[] = [auth.decision.message];
   const tag = opts.imageTag ?? "claudopilot-runner";
-  const webEnabled = opts.web ?? true;
-  const webPort = opts.webPort ?? 4317;
-  const netp = opts.net ?? defaultNetProbe;
-
-  let webPublished = false;
-  let webSkipReason: string | undefined;
-  let publish: PortPublish[] | undefined;
-  if (mode === "shell") {
-    webSkipReason = "shell mode";
-  } else if (!webEnabled) {
-    webSkipReason = "disabled (CLAUDOPILOT_WEB=0)";
-  } else if (await netp.portInUse(webPort)) {
-    webSkipReason = `host port ${webPort} is in use`;
-    diagnostics.push(
-      `[run-in-docker] Dashboard skipped: host port ${webPort} is in use.`,
-      "[run-in-docker]   Set CLAUDOPILOT_WEB_PORT=<n> or CLAUDOPILOT_WEB=0. The run continues.",
-    );
-  } else {
-    webPublished = true;
-    publish = [{ hostIp: "127.0.0.1", hostPort: webPort, containerPort: webPort }];
-    diagnostics.push(`[run-in-docker] Dashboard: http://127.0.0.1:${webPort}`);
-  }
 
   const mounts: Mount[] = [
     { source: opts.repoRoot, target: "/work" },
     ...auth.decision.mounts,
     ...resolveHostMounts(opts),
   ];
-
-  const cmd =
-    mode === "shell"
-      ? shellCmd()
-      : composeLoopCmd({ webPublished, webPort });
 
   const run: RunSpec = {
     image: tag,
@@ -344,16 +296,15 @@ async function planLaunch(
     ipc: "host",
     shmSize: "2g",
     mounts,
-    ...(publish ? { publish } : {}),
     env: defaultRunEnv(),
-    cmd,
+    cmd: shellCmd(),
   };
 
   return {
     build: buildSpec(opts),
     run,
-    webPublished,
-    ...(webSkipReason ? { webSkipReason } : {}),
+    webPublished: false,
+    webSkipReason: "shell mode",
     diagnostics,
   };
 }
@@ -386,72 +337,6 @@ export function planIsolated(
       "[run-in-docker] Isolated mode: orchestrator on the host; agents in per-phase containers.",
       "[run-in-docker]   Each agent gets a disposable clone + Claude auth, NO git push creds; the host pushes.",
     ],
-  };
-}
-
-// ── per-phase worker container (matches run-loop.sh's run_phase_container) ──
-
-export interface WorkerRunOptions {
-  phaseId: string;
-  /** Host path of the per-phase clone (bind-mounted at /work). */
-  worktree: string;
-  home: string;
-  imageTag?: string;
-  /** Reuse the auth mounts we already resolved (token + interactive both work). */
-  authMounts?: Mount[];
-  /** Forwarded env keys/values. */
-  gateCmd?: string;
-  worktreePrepareCmd?: string;
-  supervisorMode?: boolean;
-  resumeSessionId?: string;
-  fs?: FsProbe;
-}
-
-/**
- * Build the RunSpec for `cp-w-<id>` — the disposable worker container the
- * orchestrator (phase-06) launches in isolated mode. The agent gets Claude
- * auth (via authMounts) but no git push credentials.
- */
-export function workerRunSpec(opts: WorkerRunOptions): RunSpec {
-  const fs = opts.fs ?? defaultFsProbe;
-  const tag = opts.imageTag ?? "claudopilot-runner";
-  const mounts: Mount[] = [{ source: opts.worktree, target: "/work" }];
-  if (opts.authMounts && opts.authMounts.length > 0) {
-    mounts.push(...opts.authMounts);
-  } else {
-    // Mirror the implicit defaults in run_phase_container.
-    const claudeDir = path.join(opts.home, ".claude");
-    const claudeJson = path.join(opts.home, ".claude.json");
-    if (fs.dirExists(claudeDir)) {
-      mounts.push({ source: claudeDir, target: "/home/runner/.claude" });
-    }
-    if (fs.fileExists(claudeJson)) {
-      mounts.push({
-        source: claudeJson,
-        target: "/home/runner/.claude.json",
-      });
-    }
-  }
-
-  const env: RunSpec["env"] = [
-    "ANTHROPIC_API_KEY",
-    { key: "CLAUDOPILOT_PHASE", value: opts.phaseId },
-    "GATE_CMD",
-    "WORKTREE_PREPARE_CMD",
-    "SUPERVISOR_MODE",
-    "CLAUDOPILOT_RESUME_SID",
-  ];
-
-  return {
-    image: tag,
-    name: `cp-w-${opts.phaseId}`,
-    rm: true,
-    init: true,
-    ipc: "host",
-    shmSize: "2g",
-    mounts,
-    env,
-    cmd: ["bash", "/work/claudopilot/worker-entry.sh"],
   };
 }
 

@@ -1,20 +1,24 @@
 /**
- * Differential bash-vs-TS parity tests.
+ * TS engine end-to-end tests.
  *
- * Each scenario is run twice in identical tmp git repos — once against
- * `run-loop.sh`, once against the TS `runDriver` — with a stub `claude`
- * CLI on PATH. We compare the four things named in the phase doc:
+ * Each scenario runs a fixture roadmap through the real `runDriver()` in a
+ * tmp git repo — host-process mode, no Docker — with a stub `claude` CLI on
+ * PATH. We assert the engine's observable contract:
  *
- *   - process exit code
+ *   - process / driver exit code
  *   - the final `**Status:**` value
- *   - the manifest state-change commit sequence (per-id ordering)
- *   - the capture / build-log file layout
+ *   - the per-phase final states on the manifest Order list
+ *   - dependency ordering in the state-change commit log
  *
- * Branches covered:
+ * The bash engine is gone, so this is no longer a differential harness — it
+ * exercises the TS orchestrator directly, proving phases reach DONE and merge
+ * with zero bash on the engine side (only the stub `claude` test double is a
+ * shell script, hence the win32 skip).
+ *
+ * Scenarios:
  *   - clean merge of a single `(deps: none)` phase
  *   - a dependency chain (b depends on a; a must merge first)
- *   - forced supervisor path (worker exits without DONE_; supervisor
- *     recovers it on its first attempt)
+ *   - forced supervisor path (worker exits without DONE_; supervisor recovers)
  */
 
 import { describe, it, expect } from "vitest";
@@ -23,9 +27,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import {
-  captureShape,
   initRepo,
-  runBashEngine,
   runTsEngine,
   writeFixture,
   writeStubClaude,
@@ -35,9 +37,9 @@ import {
 } from "./harness.js";
 
 async function commitFixture(setup: RepoSetup): Promise<void> {
-  // Stage every fixture file (manifest, phase docs, prompts, render-stream,
-  // config) onto the base branch so worker worktrees, cut from it, see them.
-  // `git commit -a` skips untracked files; we need `git add -A` first.
+  // Stage every fixture file (manifest, phase docs, prompts, config) onto the
+  // base branch so worker worktrees, cut from it, see them. `git commit -a`
+  // skips untracked files; we need `git add -A` first.
   for (const args of [
     ["add", "-A"],
     ["commit", "-m", "fixture"],
@@ -51,123 +53,58 @@ async function commitFixture(setup: RepoSetup): Promise<void> {
   }
 }
 
-async function runParity(
-  spec: FixtureSpec,
-): Promise<{ bash: EngineResult; ts: EngineResult }> {
-  const root = await mkdtemp(path.join(tmpdir(), "cp-parity-"));
-  const bashRoot = path.join(root, "bash");
-  const tsRoot = path.join(root, "ts");
+async function runScenario(spec: FixtureSpec): Promise<EngineResult> {
+  const root = await mkdtemp(path.join(tmpdir(), "cp-e2e-"));
   const binDir = path.join(root, "bin");
-
   try {
-    await writeStubClaude(binDir, {
-      forceSupervisor: spec.forceSupervisor === true,
-    });
-
-    const bashSetup = await initRepo(bashRoot);
-    await writeFixture(bashSetup.repoDir, spec);
-    await commitFixture(bashSetup);
-
-    const tsSetup = await initRepo(tsRoot);
-    await writeFixture(tsSetup.repoDir, spec);
-    await commitFixture(tsSetup);
-
-    const bash = await runBashEngine(bashSetup, binDir);
-    const ts = await runTsEngine(tsSetup, binDir);
-    return { bash, ts };
+    await writeStubClaude(binDir, { forceSupervisor: spec.forceSupervisor === true });
+    const setup = await initRepo(path.join(root, "ts"));
+    await writeFixture(setup.repoDir, spec);
+    await commitFixture(setup);
+    return await runTsEngine(setup, binDir);
   } finally {
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
-/**
- * For the dependency-chain test, both engines may interleave the per-id
- * state-change commits when MAX_PARALLEL > 1; with MAX_PARALLEL=1 they
- * fully serialize. Compare per-id projection: same set of transitions,
- * in the same order within each id.
- */
-function perIdProjection(log: string[]): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const line of log) {
-    const m = /^(.+?)\s+->\s+(.+)$/.exec(line);
-    if (!m || !m[1] || !m[2]) continue;
-    (out[m[1]] ??= []).push(m[2]);
-  }
-  return out;
-}
-
-// The parity harness shells out to `run-loop.sh` and uses a bash stub on
-// PATH; Windows CI runners have neither natively (the worker container is
-// still POSIX, but the orchestrator side of the parity rig is host-side
-// bash). Skip on win32 — Linux + macOS jobs cover both engines.
-describe.skipIf(process.platform === "win32")("parity: bash vs TS engine", () => {
+// The stub `claude` test double is a bash script; Windows CI runners lack
+// bash natively. The engine itself is pure TS — Linux + macOS jobs cover it.
+describe.skipIf(process.platform === "win32")("e2e: TS engine (host mode, no docker)", () => {
   it("clean merge of a single (deps: none) phase", async () => {
-    const { bash, ts } = await runParity({
-      phases: [{ id: "phase-a", title: "trivial alpha" }],
-    });
-
-    expect(bash.code).toBe(0);
+    const ts = await runScenario({ phases: [{ id: "phase-a", title: "trivial alpha" }] });
     expect(ts.code).toBe(0);
-    expect(bash.status).toBe("complete");
     expect(ts.status).toBe("complete");
-    expect(bash.finalStates).toEqual([{ id: "phase-a", state: "merged" }]);
-    expect(ts.finalStates).toEqual(bash.finalStates);
-    expect(perIdProjection(ts.stateCommitLog)).toEqual(
-      perIdProjection(bash.stateCommitLog),
-    );
-    expect(captureShape(ts.artifacts)).toEqual(captureShape(bash.artifacts));
+    expect(ts.finalStates).toEqual([{ id: "phase-a", state: "merged" }]);
   }, 60_000);
 
   it("dependency chain: phase-b waits for phase-a", async () => {
-    const { bash, ts } = await runParity({
+    const ts = await runScenario({
       phases: [
         { id: "phase-a", title: "first" },
         { id: "phase-b", title: "second", deps: ["phase-a"] },
       ],
     });
-
-    expect(bash.code).toBe(0);
     expect(ts.code).toBe(0);
-    expect(bash.status).toBe("complete");
     expect(ts.status).toBe("complete");
-    const expectedFinal = [
+    expect(ts.finalStates).toEqual([
       { id: "phase-a", state: "merged" },
       { id: "phase-b", state: "merged" },
-    ];
-    expect(bash.finalStates).toEqual(expectedFinal);
-    expect(ts.finalStates).toEqual(expectedFinal);
-
-    // Dependency ordering: phase-a must hit `merged` before phase-b hits
-    // `running` (both engines run with MAX_PARALLEL=1 so this is
-    // observable in the state-change commit log).
-    for (const log of [bash.stateCommitLog, ts.stateCommitLog]) {
-      const aMerged = log.indexOf("phase-a -> merged");
-      const bRunning = log.indexOf("phase-b -> running");
-      expect(aMerged).toBeGreaterThanOrEqual(0);
-      expect(bRunning).toBeGreaterThan(aMerged);
-    }
-
-    expect(perIdProjection(ts.stateCommitLog)).toEqual(
-      perIdProjection(bash.stateCommitLog),
-    );
-    expect(captureShape(ts.artifacts)).toEqual(captureShape(bash.artifacts));
+    ]);
+    // phase-a must reach `merged` before phase-b reaches `running`
+    // (MAX_PARALLEL=1 makes this observable in the state-change commit log).
+    const aMerged = ts.stateCommitLog.indexOf("phase-a -> merged");
+    const bRunning = ts.stateCommitLog.indexOf("phase-b -> running");
+    expect(aMerged).toBeGreaterThanOrEqual(0);
+    expect(bRunning).toBeGreaterThan(aMerged);
   }, 90_000);
 
   it("forced supervisor path: worker skips DONE_, supervisor recovers", async () => {
-    const { bash, ts } = await runParity({
+    const ts = await runScenario({
       phases: [{ id: "phase-a", title: "needs supervisor" }],
       forceSupervisor: true,
     });
-
-    expect(bash.code).toBe(0);
     expect(ts.code).toBe(0);
-    expect(bash.status).toBe("complete");
     expect(ts.status).toBe("complete");
-    expect(bash.finalStates).toEqual([{ id: "phase-a", state: "merged" }]);
-    expect(ts.finalStates).toEqual(bash.finalStates);
-    expect(perIdProjection(ts.stateCommitLog)).toEqual(
-      perIdProjection(bash.stateCommitLog),
-    );
-    expect(captureShape(ts.artifacts)).toEqual(captureShape(bash.artifacts));
+    expect(ts.finalStates).toEqual([{ id: "phase-a", state: "merged" }]);
   }, 90_000);
 });
