@@ -3,6 +3,7 @@
   "version": "0.4.0",
   "description": "Autonomous parallel execution loop for Claude Code — feed it a dependency-annotated roadmap and it builds every eligible phase concurrently, each in its own git worktree, merging green work and parking red.",
   "type": "module",
+  "packageManager": "pnpm@10.34.4",
   "bin": {
     "claudopilot": "dist/cli.js"
   },

@@ -56,7 +56,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # pnpm pinned to the project's packageManager (see package.json).
 # The Playwright Noble image already ships Node + npm, so corepack works.
-RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+RUN corepack enable && corepack prepare pnpm@10.34.4 --activate
 
 # Claude Code CLI.
 RUN npm install -g @anthropic-ai/claude-code
