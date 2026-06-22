@@ -25,16 +25,18 @@ The real contract lives in `claudopilot/prompts/worker.md` (+ your
 
 ## Order
 
-<!-- List your phases here, one per line. The phase id is parsed from the first
-     **bold** segment on each line; deps must reference earlier phase ids. A
-     phase with no dependencies may write `(deps: none)` or omit the annotation.
+<!-- Phase id is parsed from the first **bold** segment on each line.
+     deps must reference earlier phase ids. A phase with no dependencies may
+     write `(deps: none)` or omit the annotation — both mean "no deps".
 
-     Example line:
-       1. [pending] **phase-NN** — shared contracts / types (deps: none)
+     This is an EXAMPLE roadmap (phase-01 fans out to two parallel features that
+     reassemble in phase-04). Replace it with your own phases. See the companion
+     phase-01-example.md for the per-phase doc shape. -->
 
-     Run `claudopilot init --with-examples` for a worked sample roadmap, or see
-     the "Setting up tasks and roadmaps" section of the README. -->
-
+1. [pending] **phase-01** — contracts / shared types (deps: none)
+2. [pending] **phase-02** — feature A (deps: phase-01)
+3. [pending] **phase-03** — feature B (deps: phase-01)
+4. [pending] **phase-04** — assembly (deps: phase-02, phase-03)
 
 ---
 

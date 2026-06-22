@@ -8,14 +8,14 @@
  * still executes them inside the container.
  *
  * Subcommands:
- *   init [--force]                 Scaffold a repo (vendor engine + project stubs).
+ *   init [--with-examples] [--force]  Scaffold a repo (vendor engine + project stubs).
  *   run  [--isolated|--shell]      Build the image and start the loop.
  *   progress [--json|--watch [N]|--follow <id>|--no-color|--manifest <p>]
  *   web [--port N] [--host H] [--manifest <p>]
  *   --version | --help
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
@@ -61,6 +61,7 @@ const ENGINE_FILES = [
   "web-server.mjs",
   "web/index.html",
   "web/app.mjs",
+  "web/events.mjs",
   "web/transcript.mjs",
   "web/styles.css",
   "web/vendor/lit-html.js",
@@ -69,11 +70,24 @@ const ENGINE_FILES = [
   "prompts/supervisor.md",
 ];
 
-const PROJECT_FILES: Array<[string, string]> = [
+// Project files you own and edit. These are NEVER overwritten by `init` (not
+// even with --force, which only re-vendors the engine) — a second `init` on a
+// configured repo is a safe no-op for everything here.
+const CORE_PROJECT_FILES: Array<[string, string]> = [
   ["templates/claudopilot.config.sh", "claudopilot.config.sh"],
-  ["templates/EXECUTION-MANIFEST.md", "roadmap/EXECUTION-MANIFEST.md"],
-  ["templates/phase-01-example.md", "roadmap/phase-01-example.md"],
   ["templates/worker.project.md", "claudopilot/prompts/worker.project.md"],
+];
+
+// The manifest is core, but its starting content depends on whether examples
+// were requested: a skeleton (empty Order) by default, or a worked sample.
+const MANIFEST_DEST = "roadmap/EXECUTION-MANIFEST.md";
+const MANIFEST_SKELETON_TPL = "templates/EXECUTION-MANIFEST.md";
+const MANIFEST_EXAMPLE_TPL = "templates/EXECUTION-MANIFEST.example.md";
+
+// Example scaffolding — only laid down with `--with-examples`, and only into a
+// roadmap that has no content of its own yet.
+const EXAMPLE_FILES: Array<[string, string]> = [
+  ["templates/phase-01-example.md", "roadmap/phase-01-example.md"],
 ];
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -98,6 +112,37 @@ function copyFile(src: string, dest: string, force: boolean): boolean {
   cpSync(src, dest);
   writeOut(`  write  ${dest}`);
   return true;
+}
+
+/**
+ * Write a project file the user owns. Unlike {@link copyFile}, this NEVER
+ * overwrites an existing file — `init` must be safe to re-run on a configured
+ * repo. Returns true iff a new file was written.
+ */
+function writeProjectFile(src: string, dest: string): boolean {
+  if (existsSync(dest)) {
+    writeOut(`  skip   ${dest} (exists; left as-is)`);
+    return false;
+  }
+  mkdirSync(dirname(dest), { recursive: true });
+  cpSync(src, dest);
+  writeOut(`  write  ${dest}`);
+  return true;
+}
+
+/**
+ * True if the roadmap directory already has content of its own — a manifest or
+ * any `*.md` phase doc. Used to decide whether `--with-examples` should lay down
+ * the sample roadmap: a partially-set-up repo keeps what it has.
+ */
+function roadmapHasContent(cwd: string): boolean {
+  const dir = join(cwd, "roadmap");
+  if (!existsSync(dir)) return false;
+  try {
+    return readdirSync(dir).some((f) => f.endsWith(".md"));
+  } catch {
+    return false;
+  }
 }
 
 interface FlagSpec {
@@ -146,28 +191,60 @@ function parseFlags(argv: readonly string[], spec: FlagSpec): ParsedFlags {
 
 function cmdInit(args: readonly string[]): number {
   const force = args.includes("--force");
+  const withExamples = args.includes("--with-examples");
   const cwd = process.cwd();
   writeOut(`Scaffolding claudopilot into ${cwd}`);
 
+  // Engine: tool-managed, vendored under ./claudopilot/. Safe to re-vendor with
+  // --force; this is the only thing --force touches.
   writeOut("\nEngine (vendored into ./claudopilot/):");
   for (const rel of ENGINE_FILES) {
     copyFile(join(PKG_ROOT, rel), join(cwd, "claudopilot", rel), force);
   }
 
-  writeOut("\nProject files (yours to edit):");
-  for (const [tpl, dest] of PROJECT_FILES) {
-    copyFile(join(PKG_ROOT, tpl), join(cwd, dest), force);
+  // Core project files: yours to edit, never overwritten.
+  writeOut("\nProject files (yours to edit; never overwritten):");
+  for (const [tpl, dest] of CORE_PROJECT_FILES) {
+    writeProjectFile(join(PKG_ROOT, tpl), join(cwd, dest));
   }
 
-  writeOut(
-    [
-      "\nDone. Next steps:",
-      "  1. Edit claudopilot.config.sh   — set GATE_CMD and build/bootstrap commands.",
-      "  2. Edit claudopilot/prompts/worker.project.md — your project's cornerstones.",
-      "  3. Fill in roadmap/EXECUTION-MANIFEST.md + per-phase docs.",
-      "  4. Commit, then: claudopilot run   (add --isolated for per-phase containers).",
-    ].join("\n"),
+  // Examples are skipped when the roadmap already has content of its own, so a
+  // partially-set-up repo keeps what it has even if --with-examples is passed.
+  const roadmapSetUp = roadmapHasContent(cwd);
+  const emitExamples = withExamples && !roadmapSetUp;
+  if (withExamples && roadmapSetUp) {
+    writeOut(
+      "\nroadmap/ already has content — skipping examples (your roadmap is left as-is).",
+    );
+  }
+
+  // Manifest is core (never overwritten); its starting content is the worked
+  // sample only when we're emitting examples into an empty roadmap.
+  const manifestTpl = emitExamples ? MANIFEST_EXAMPLE_TPL : MANIFEST_SKELETON_TPL;
+  writeProjectFile(join(PKG_ROOT, manifestTpl), join(cwd, MANIFEST_DEST));
+
+  if (emitExamples) {
+    writeOut("\nExamples (--with-examples):");
+    for (const [tpl, dest] of EXAMPLE_FILES) {
+      writeProjectFile(join(PKG_ROOT, tpl), join(cwd, dest));
+    }
+  }
+
+  const nextSteps = [
+    "\nDone. Next steps:",
+    "  1. Edit claudopilot.config.sh   — set GATE_CMD and build/bootstrap commands.",
+    "  2. Edit claudopilot/prompts/worker.project.md — your project's cornerstones.",
+    "  3. Fill in roadmap/EXECUTION-MANIFEST.md + per-phase docs.",
+  ];
+  if (!withExamples) {
+    nextSteps.push(
+      "     (Run `claudopilot init --with-examples` for a worked sample roadmap.)",
+    );
+  }
+  nextSteps.push(
+    "  4. Commit, then: claudopilot run   (add --isolated for per-phase containers).",
   );
+  writeOut(nextSteps.join("\n"));
   return 0;
 }
 
@@ -413,7 +490,10 @@ function helpText(): string {
   return `claudopilot v${p.version} — autonomous execution loop for Claude Code
 
 Usage:
-  claudopilot init [--force]              Scaffold this repo (vendor engine + config stubs)
+  claudopilot init [--with-examples] [--force]
+                                          Scaffold this repo (vendor engine + config stubs).
+                                          Never overwrites your project files; --with-examples
+                                          adds a sample roadmap; --force re-vendors the engine.
   claudopilot run [--isolated|--shell]    Build the image and run the loop
   claudopilot progress [args…]            Read-only progress view of a run
   claudopilot web [--port N] [--host H]   Local web dashboard
