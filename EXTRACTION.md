@@ -19,17 +19,19 @@ Host-side (TypeScript, built into `dist/cli.js` — the `claudopilot` binary):
 | `src/web/server.ts`          | localhost dashboard (SSE + static)                             |
 | `src/agent/`                 | `claude` / `opencode` capture + stream renderer                |
 
-In-container (vendored into each target repo's `claudopilot/` on `init`):
+Baked into the worker image (built from the package, not vendored into the repo):
 
 | File                                         | Role                                                             |
 | -------------------------------------------- | ---------------------------------------------------------------- |
-| `run-loop.sh`                                | in-container loop driver (default mode)                          |
-| `worker-entry.sh`                            | in-container worker/supervisor entrypoint (`--isolated`)         |
-| `render-stream.mjs`, `render-stream-opencode.mjs` | `stream-json` -> readable transcript                       |
-| `web-server.mjs`                             | in-container dashboard server when published                     |
-| `web/`                                       | lit-html browser assets for the dashboard                        |
-| `Dockerfile`                                 | default worker/runner image                                      |
-| `prompts/worker.md`, `prompts/supervisor.md` | generic agent contract                                           |
+| `dist/cli.js`                                | the bundled CLI; the container runs `claudopilot __worker` per phase |
+| `Dockerfile`, `.dockerignore`                | worker/runner image (Playwright + toolchain + the baked CLI)     |
+| `web/`                                       | lit-html browser assets, served host-side by `src/web/server.ts` |
+
+Vendored into each target repo's `claudopilot/` on `init` (the only engine files in the repo):
+
+| File                                         | Role                                                             |
+| -------------------------------------------- | ---------------------------------------------------------------- |
+| `prompts/worker.md`, `prompts/supervisor.md` | generic agent contract (read host-side by the orchestrator)      |
 
 These carry **no** `@app`/`i18n`/`pnpm` references; project specifics arrive via config.
 

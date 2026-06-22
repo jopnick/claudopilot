@@ -107,17 +107,14 @@ Key knobs (full list under [Configuration](#configuration-environment-variables)
 ```
 claudopilot/
 ├── README.md                # this file
-├── src/                     # TypeScript engine (CLI, orchestrator, progress, web)
-├── dist/                    # built CLI (bin: dist/cli.js)
-├── run-loop.sh              # in-container loop driver (default-mode worker image)
-├── worker-entry.sh          # in-container per-phase entrypoint (--isolated)
-├── render-stream.mjs        # stream-json → transcript renderer (used in-container)
-├── web-server.mjs           # in-container dashboard server when --web is published
-├── web/                     # lit-html dashboard (agents + live thought streams)
-├── Dockerfile               # Playwright + pnpm + git + gh + Claude Code
+├── src/                     # TypeScript engine (CLI, orchestrator, progress, web, runner)
+├── dist/                    # built CLI (bin: dist/cli.js) — also baked into the worker image
+├── web/                     # lit-html dashboard (agents + live thought streams), served host-side
+├── Dockerfile               # worker image: Playwright + pnpm + git + gh + Claude Code + the CLI
 ├── prompts/
 │   ├── worker.md            # spawned every tick to do the actual work
 │   └── supervisor.md        # spawned only when the worker halts on test failure
+├── templates/               # what `claudopilot init` scaffolds into a target repo
 ├── .claude-plugin/
 │   └── marketplace.json     # makes this repo a Claude Code plugin marketplace
 └── pilot/                   # the same loop as a NATIVE Claude Code plugin (no Docker)
@@ -125,10 +122,13 @@ claudopilot/
     └── agents/              # phase-worker + phase-supervisor agent definitions
 ```
 
-> **Two ways to run.** The headline above is the **bash/Docker engine** (primary;
-> built for unattended/CI runs, hard container isolation, and local-model runs).
-> If you'd rather drive it hands-on from inside a Claude Code session with zero
-> setup, there's a native plugin — see [Native Claude Code plugin](#native-claude-code-plugin-no-docker).
+> **Two ways to run.** The headline above is the **TypeScript engine** (primary):
+> a host-side orchestrator that drives the loop and runs each phase in its own
+> disposable Docker container — built for unattended/CI runs and hard isolation.
+> It's pure Node (no bash); the worker image bakes the CLI in, so nothing is
+> vendored into your repo but the prompt contract. If you'd rather drive it
+> hands-on from inside a Claude Code session with zero setup, there's a native
+> plugin — see [Native Claude Code plugin](#native-claude-code-plugin-no-docker).
 
 ## Install
 
@@ -233,7 +233,7 @@ See [Exit codes](#exit-codes) for what other exits mean.
 
 ```
                  ┌──────────────────────────────────────────────────┐
-                 │  run-loop.sh                                      │
+                 │  driver tick (host orchestrator)                  │
                  │                                                   │
    manifest ────►│  1. Roll usage window, pause if at threshold      │
    .md          │  2. Check `Status: complete` → exit 0              │
@@ -329,8 +329,8 @@ The single source of truth for what's pending and what's done. Template:
 ```markdown
 # Project — Autonomous Execution Manifest
 
-> Single source of truth for the autonomous loop in
-> [claudopilot/run-loop.sh](../claudopilot/run-loop.sh).
+> Single source of truth for the autonomous loop — the driver reads phase
+> states and dependencies from the Order section below.
 
 **Status:** in-progress
 
@@ -678,7 +678,7 @@ All overridable in env at launch time.
 | **Web dashboard** | | |
 | `CLAUDOPILOT_WEB` | `1` | Auto-start the dashboard with each `claudopilot run`. Set `0` to disable. |
 | `CLAUDOPILOT_WEB_PORT` | `4317` | Host port for the dashboard (`http://127.0.0.1:<port>`). |
-| `CLAUDOPILOT_WEB_HOST` | `127.0.0.1` | Bind address for `web-server.mjs` (the Docker launcher sets `0.0.0.0` inside the container; the published port stays host-loopback). |
+| `CLAUDOPILOT_WEB_HOST` | `127.0.0.1` | Bind address for the host-side dashboard server. Defaults to loopback; set it only if you need to reach the dashboard from another host. |
 
 ## Exit codes
 
@@ -738,27 +738,23 @@ long. Falls back to `DEFAULT_RATE_LIMIT_SLEEP` if no hint is parseable.
 The failed tick doesn't burn against `MAX_ITER` or the window counter —
 the same phase is retried after the backoff.
 
-## Running outside Docker
+## Why Docker is required
 
-Possible but not recommended. `bypassPermissions` means the agent can run
-arbitrary commands without prompting; Docker gives you a clean blast
-radius. If you do:
-
-```bash
-# Same prereqs (~/.claude, ~/.claude.json, SSH key)
-cd /path/to/your/repo
-git checkout autonomous-runner
-REPO_ROOT="$(pwd)" bash claudopilot/run-loop.sh
-```
-
-`REPO_ROOT` is the one variable you usually need to set — it defaults
-to `/work` (the Docker mount point).
+Each phase runs with `bypassPermissions` — the agent can run arbitrary commands
+without prompting. Docker gives that a clean blast radius: every worker runs in
+its own disposable Linux container with no host git-push credentials, and the
+host orchestrator owns all merges and pushes. That isolation is the point, so
+`claudopilot run` always launches workers in containers; there is no bash /
+no-Docker entrypoint to bypass it. (The orchestrator itself is host-side Node,
+so on Windows run it under WSL2 — the container still runs Linux either way.)
 
 ## Agent drivers (Claude Code or OpenCode + Ollama)
 
 The engine is **driver-agnostic** — scheduling, worktrees, serial merges, the
 `DONE_` done-signal, and the dashboard don't care which agent CLI runs each
-worker. Two are built in, selected with `AGENT_DRIVER`:
+worker. Two are built in, selected with `AGENT_DRIVER` (set it in
+`claudopilot.config.sh` or the environment; the orchestrator forwards it into
+each worker container):
 
 | `AGENT_DRIVER` | Runs each worker as | Notes |
 | --- | --- | --- |
@@ -770,16 +766,14 @@ Ollama model**, for a $0 / offline run:
 
 ```bash
 # fully local & free: OpenCode + an Ollama model
-AGENT_DRIVER=opencode AGENT_MODEL=ollama/qwen2.5-coder \
-  REPO_ROOT="$(pwd)" MAX_PARALLEL=1 bash claudopilot/run-loop.sh
+AGENT_DRIVER=opencode AGENT_MODEL=ollama/qwen2.5-coder MAX_PARALLEL=1 claudopilot run
 
 # or a cheap/capable hosted model through OpenCode (configure it in OpenCode first)
-AGENT_DRIVER=opencode AGENT_MODEL=openrouter/deepseek/deepseek-chat \
-  REPO_ROOT="$(pwd)" bash claudopilot/run-loop.sh
+AGENT_DRIVER=opencode AGENT_MODEL=openrouter/deepseek/deepseek-chat claudopilot run
 ```
 
-OpenCode's JSON events are mapped to the same transcript markers by
-`render-stream-opencode.mjs`, so the dashboard and `claudopilot progress` work unchanged.
+OpenCode's JSON events are mapped to the same transcript markers by the engine's
+in-process renderer, so the dashboard and `claudopilot progress` work unchanged.
 
 > **Honest caveat — capability, not plumbing.** The worker contract (branch,
 > implement slices, keep a real test gate green, fix failures, commit, rename
@@ -819,7 +813,7 @@ own worktree, merges finished `auto/<id>` branches serially, owns the manifest,
 and sends in a **`pilot:phase-supervisor`** when a gate stays red. If there's no
 manifest yet, it offers to author one from your goal first.
 
-It is **contract-compatible** with the bash engine — same manifest grammar, same
+It is **contract-compatible** with the main engine — same manifest grammar, same
 `auto/<id>` branches, same `DONE_`-rename done-signal, same driver-owns-merges
 invariant — so either driver can resume what the other left off (just never run
 both against one manifest at once).
@@ -1029,9 +1023,9 @@ assumptions. Likely things to edit:
   doesn't need browsers, swap to `node:22-bookworm-slim` (or similar)
   for a smaller image.
 
-The TypeScript engine ([src/](src/)) and the in-container loop driver
-([run-loop.sh](run-loop.sh)) are project-agnostic — you should
-not need to edit them for a new project.
+The TypeScript engine ([src/](src/)) is project-agnostic — you should not need
+to edit it for a new project. Your project-specific configuration lives entirely
+in `claudopilot.config.sh`, the roadmap, and the `worker.project.md` overlay.
 
 ## Operational notes
 

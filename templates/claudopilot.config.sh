@@ -2,9 +2,9 @@
 #
 # claudopilot.config.sh — project-owned configuration.
 #
-# This file STAYS in your repo (the engine under ./claudopilot/ is vendored and
-# repo-agnostic). run-loop.sh sources it and these values override the engine
-# defaults. Environment variables passed at launch override this file in turn.
+# This file STAYS in your repo. The claudopilot engine reads it and these values
+# override the engine defaults; environment variables passed at launch override
+# this file in turn.
 #
 # Uncomment and edit what your project needs; sensible defaults apply otherwise.
 

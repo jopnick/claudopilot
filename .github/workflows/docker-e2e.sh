@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 #
-# Docker e2e smoke for the TypeScript engine — phase-08.2.
+# Docker e2e smoke for the (sole) TypeScript engine.
 #
-# Runs `claudopilot run --engine ts --isolated` against a one-phase
-# fixture roadmap in a fresh tmp repo, with a stub `claude` baked into
-# a derived worker image. Asserts:
+# Runs `claudopilot run` against a one-phase fixture roadmap in a fresh tmp
+# repo. The orchestrator drives the loop on the host and launches a worker
+# container running the baked-in `claudopilot __worker`; a stub `claude` baked
+# into a derived worker image stands in for the agent. Asserts:
 #   - process exit 0
 #   - the manifest's `**Status:**` line ends as `complete`
 #   - the phase doc was renamed to `DONE_*`
 #
-# The engine's own docker.build is short-circuited by
-# CLAUDOPILOT_SKIP_BUILD=1; otherwise it would overwrite the stub image
-# we just built from the canonical Dockerfile.
+# The engine's own docker.build is short-circuited by CLAUDOPILOT_SKIP_BUILD=1;
+# otherwise it would overwrite the stub image we just built. The base image
+# already bakes the engine in (COPY dist/), so nothing bash is vendored into
+# the fixture repo — only the prompt contract.
 
 set -euo pipefail
 
@@ -98,9 +100,6 @@ cat > "$FIX/roadmap/phase-a-alpha.md" <<EOF
 # phase-a — alpha
 trivial.
 EOF
-cp "$REPO/render-stream.mjs" "$FIX/claudopilot/render-stream.mjs"
-cp "$REPO/render-stream-opencode.mjs" "$FIX/claudopilot/render-stream-opencode.mjs"
-cp "$REPO/worker-entry.sh" "$FIX/claudopilot/worker-entry.sh"
 echo "# e2e worker prompt" > "$FIX/claudopilot/prompts/worker.md"
 echo "# e2e supervisor prompt" > "$FIX/claudopilot/prompts/supervisor.md"
 cat > "$FIX/claudopilot.config.sh" <<EOF
@@ -117,7 +116,7 @@ git -C "$FIX" push -q -u origin main
 git -C "$FIX" checkout -q -b runner
 git -C "$FIX" push -q -u origin runner
 
-echo "==> Run TS engine in isolated mode"
+echo "==> Run the engine (host orchestrator + per-phase worker container)"
 cd "$FIX"
 set +e
 ANTHROPIC_API_KEY="dummy" \
@@ -125,7 +124,7 @@ CLAUDOPILOT_IMAGE_TAG=claudopilot-runner-ci \
 CLAUDOPILOT_SKIP_BUILD=1 \
 CLAUDOPILOT_WEB=0 \
 BASE_BRANCH_EXPLICIT=1 \
-node "$REPO/dist/cli.js" run --isolated
+node "$REPO/dist/cli.js" run
 CODE=$?
 set -e
 cd "$REPO"

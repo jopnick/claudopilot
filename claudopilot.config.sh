@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # claudopilot.config.sh — project-owned configuration for claudopilot building
-# *itself* (the bash → TypeScript engine port under roadmap/).
+# *itself* (self-host).
 #
-# run-loop.sh sources it; these values override engine defaults. Env vars passed
+# The engine reads it; these values override engine defaults. Env vars passed
 # at launch override this file in turn.
 
 # ── Quality gate ────────────────────────────────────────────────────────────

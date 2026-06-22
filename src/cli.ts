@@ -237,7 +237,7 @@ function cmdInit(args: readonly string[]): number {
     );
   }
   nextSteps.push(
-    "  4. Commit, then: claudopilot run   (add --isolated for per-phase containers).",
+    "  4. Commit, then: claudopilot run   (--shell drops into the worker image to debug).",
   );
   writeOut(nextSteps.join("\n"));
   return 0;

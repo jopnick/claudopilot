@@ -2,21 +2,20 @@ name: CI
 
 on:
   push:
-    branches: [run/ts-engine-port, main, master]
+    branches: [ts-rewrite-resume, run/ts-engine-port, main, master]
   pull_request:
   workflow_dispatch:
 
-# Phase-08 cross-platform CI gate.
+# Cross-platform CI gate.
 #
 #   `unit` matrix runs install/typecheck/lint/build/test on Linux, macOS,
-#   and Windows. The TS engine is pure Node, so it runs natively on all
-#   three. The parity harness (which shells out to run-loop.sh and a bash
-#   `claude` stub) self-skips on Windows via `describe.skipIf`.
+#   and Windows. The engine is pure Node, so it runs natively on all three.
+#   The TS-engine e2e (which uses a bash `claude` test stub) self-skips on
+#   Windows via `describe.skipIf`.
 #
-#   `docker-e2e` runs a one-phase fixture through `claudopilot run
-#   --engine ts --isolated` on Ubuntu against a derived image whose
-#   `claude` is a stub. CLAUDOPILOT_SKIP_BUILD=1 keeps the engine from
-#   overwriting our stub-bearing image with the canonical Dockerfile.
+#   `docker-e2e` runs a one-phase fixture through `claudopilot run` on Ubuntu
+#   against a derived image whose `claude` is a stub. CLAUDOPILOT_SKIP_BUILD=1
+#   keeps the engine from overwriting our stub-bearing image.
 
 jobs:
   unit:
@@ -46,7 +45,7 @@ jobs:
       - run: pnpm -s test
 
   docker-e2e:
-    name: docker e2e (--engine ts --isolated)
+    name: docker e2e (host orchestrator + worker container)
     runs-on: ubuntu-latest
     needs: unit
     steps:

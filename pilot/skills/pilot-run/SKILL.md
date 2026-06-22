@@ -257,9 +257,9 @@ and ask whether to start the run.
 - A repo-local `.claude/skills/pilot-run` (e.g. a project that vendors a
   specialized copy) takes precedence over this global one in that repo —
   that is correct; defer to it.
-- This skill is contract-compatible with claudopilot (`run-loop.sh` +
-  Docker), where a repo vendors it: either driver can resume where the other
-  stopped, but never run both on the same manifest at once.
+- This skill is contract-compatible with the claudopilot Docker engine, where a
+  repo vendors it: either driver can resume where the other stopped, but never
+  run both on the same manifest at once.
 - Workers run under the session's permission mode. For long unattended runs
   consider broadening permissions for the run, or pair
   `/pilot-run --keep-going` with a scheduled agent.
