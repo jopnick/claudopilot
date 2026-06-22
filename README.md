@@ -24,6 +24,40 @@ gate command, commit-message vocabulary, and project rules all live in
 [prompts/worker.md](prompts/worker.md) as text you edit, not in the
 loop driver.
 
+## Requirements
+
+- **Node.js ≥ 18** (the CLI) and **Docker** — Docker Desktop on macOS/Windows,
+  Docker Engine on Linux. Each phase runs in a disposable Linux container.
+- A way for Claude Code to authenticate: either export `ANTHROPIC_API_KEY` in
+  your shell, or run `claude` once on the host so `~/.claude/` exists (see
+  [Quick start](#quick-start) for details).
+- **Windows:** run claudopilot inside **WSL2**. The orchestrator uses POSIX
+  process/signal semantics; the worker always runs in a Linux container, so the
+  host OS is otherwise abstracted.
+- Optional: a passphrase-less SSH key if you want the loop to `git push` merged
+  work to a remote.
+
+## Get started in 60 seconds
+
+```bash
+npm install -g claudopilot           # or run any command via: npx claudopilot <command>
+
+cd your-repo
+git checkout -b autonomous-runner    # the loop refuses to land work on main/trunk
+
+claudopilot init --with-examples     # scaffold config + a runnable sample roadmap
+#   edit claudopilot.config.sh   → set GATE_CMD (your test/lint command)
+#   edit roadmap/                → describe your phases (or keep the sample to try it)
+
+claudopilot run                      # build the worker image + run the loop
+claudopilot web                      # optional: live dashboard at http://127.0.0.1:4317
+```
+
+First time? `claudopilot init --with-examples` writes a sample `roadmap/` you can
+run as-is to watch the loop work end-to-end, then adapt. `init` never overwrites
+files you've already edited, so it's safe to re-run. The rest of this README
+explains each piece in depth.
+
 ## Parallel execution
 
 The driver schedules by **dependency graph**, not by queue position. Each pass it:
@@ -106,13 +140,20 @@ Then, from the root of the repo you want to drive:
 
 ```bash
 claudopilot init                # vendors the engine into ./claudopilot/ and
-                                # scaffolds claudopilot.config.sh + roadmap/
+                                # scaffolds claudopilot.config.sh + a skeleton roadmap/
+claudopilot init --with-examples  # …same, plus a runnable sample roadmap
 # …edit claudopilot.config.sh (GATE_CMD), the roadmap, and the prompt overlay…
 claudopilot run                 # build the image + run the loop (--isolated for
                                 # per-phase containers; --shell to drop into bash)
 claudopilot progress            # read-only view of an in-flight run
 claudopilot web                 # browser dashboard at http://127.0.0.1:4317
 ```
+
+`init` never overwrites project files you own (`claudopilot.config.sh`, the
+roadmap, the prompt overlay) — re-running it only fills in what's missing.
+`--with-examples` adds a worked sample roadmap, and is skipped if your `roadmap/`
+already has content. `--force` re-vendors the engine under `./claudopilot/` after
+upgrading the package (it still never touches your project files).
 
 ### Web dashboard
 
@@ -142,9 +183,8 @@ You can also run it standalone any time from the repo root: `claudopilot web`.
 
 `init` writes the engine scripts under `./claudopilot/` (so the Docker layout
 below resolves) and leaves `claudopilot.config.sh`, the roadmap, and
-`claudopilot/prompts/worker.project.md` for you to fill in. Re-run with `--force`
-to re-vendor the engine after upgrading the package. The sections below describe
-what those scripts do and the manifest/phase-doc format `init` stubs out.
+`claudopilot/prompts/worker.project.md` for you to fill in. The sections below
+describe what those scripts do and the manifest/phase-doc format `init` stubs out.
 
 ## Quick start
 
