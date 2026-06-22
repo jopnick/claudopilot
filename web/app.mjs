@@ -7,7 +7,9 @@ import { parseTranscript } from "/transcript.mjs";
 import { EV, streamUrl } from "/events.mjs";
 
 const TICK_MS = 1000; // refresh the "time on step" timers between pushes
-const SORT_KEY = "claudopilot.sortOrder";
+const AGENT_SORT_KEY = "claudopilot.agentSortOrder";
+const LOG_SORT_KEY = "claudopilot.logSortOrder";
+const LEGACY_SORT_KEY = "claudopilot.sortOrder";
 const SORT_BY_KEY = "claudopilot.sortBy";
 const HIDDEN_STATES_KEY = "claudopilot.hiddenStates";
 const SEARCH_KEY = "claudopilot.agentSearch";
@@ -55,6 +57,7 @@ function fmtTokens(n) {
 }
 
 // ── state ─────────────────────────────────────────────────────────────────
+const legacySort = localStorage.getItem(LEGACY_SORT_KEY);
 const state = {
   model: null, // last server-pushed progress snapshot
   error: null,
@@ -63,23 +66,30 @@ const state = {
   // transcript accumulator for the selected agent
   t: { id: null, raw: "", offset: 0, exists: false },
   autoFollow: true,
-  sortOrder: localStorage.getItem(SORT_KEY) || SORT_DESC,
+  agentSortOrder: localStorage.getItem(AGENT_SORT_KEY) || legacySort || SORT_DESC,
+  logSortOrder: localStorage.getItem(LOG_SORT_KEY) || legacySort || SORT_DESC,
   sortBy: localStorage.getItem(SORT_BY_KEY) || SORT_BY_MANIFEST,
   hiddenStates: new Set(loadJson(HIDDEN_STATES_KEY, [])),
   agentSearch: localStorage.getItem(SEARCH_KEY) || "",
   hiddenBlockKinds: new Set(loadJson(BLOCK_FILTER_KEY, [])),
 };
 
-function orderedItems(items) {
-  if (state.sortOrder === SORT_DESC) return [...items].reverse();
+function orderedLogBlocks(items) {
+  if (state.logSortOrder === SORT_DESC) return [...items].reverse();
   return items;
 }
 
-function toggleSortOrder() {
-  state.sortOrder = state.sortOrder === SORT_DESC ? SORT_ASC : SORT_DESC;
-  localStorage.setItem(SORT_KEY, state.sortOrder);
+function toggleAgentSortOrder() {
+  state.agentSortOrder = state.agentSortOrder === SORT_DESC ? SORT_ASC : SORT_DESC;
+  localStorage.setItem(AGENT_SORT_KEY, state.agentSortOrder);
+  renderAgents();
+}
+
+function toggleLogSortOrder() {
+  state.logSortOrder = state.logSortOrder === SORT_DESC ? SORT_ASC : SORT_DESC;
+  localStorage.setItem(LOG_SORT_KEY, state.logSortOrder);
   state.autoFollow = true;
-  renderAll();
+  renderDetail();
   scrollToLatest();
 }
 
@@ -154,7 +164,7 @@ function phaseMatchesFilter(p) {
 
 function sortPhases(phases, allPhases) {
   const indexed = phases.map((p) => ({ p, idx: allPhases.indexOf(p) }));
-  const dir = state.sortOrder === SORT_DESC ? -1 : 1;
+  const dir = state.agentSortOrder === SORT_DESC ? -1 : 1;
   indexed.sort((a, b) => {
     switch (state.sortBy) {
       case SORT_BY_STATUS: {
@@ -333,8 +343,8 @@ function agentsToolbar(phases) {
             <option value=${SORT_BY_PROGRESS}>Progress</option>
           </select>
         </label>
-        <button class="chip" title="Toggle sort direction for agents and log" @click=${toggleSortOrder}>
-          ${state.sortOrder === SORT_DESC ? "↓ Newest first" : "↑ Oldest first"}
+        <button class="chip" title="Toggle agent list sort direction" @click=${toggleAgentSortOrder}>
+          ${state.agentSortOrder === SORT_DESC ? "↓ Newest first" : "↑ Oldest first"}
         </button>
       </div>
     </div>
@@ -446,13 +456,13 @@ function renderDetail() {
     return;
   }
   const p = selectedPhase();
-  const blocks = filterBlocks(orderedItems(parseTranscript(state.t.raw)));
+  const blocks = filterBlocks(orderedLogBlocks(parseTranscript(state.t.raw)));
   const wasAtLatest = isAtLatest();
 
   const jumpBtn = !state.autoFollow
     ? html`<div class="scroll-pause">
         <button @click=${jumpToLatest}>
-          ${state.sortOrder === SORT_DESC ? "↑ Jump to latest" : "↓ Jump to latest"}
+          ${state.logSortOrder === SORT_DESC ? "↑ Jump to latest" : "↓ Jump to latest"}
         </button>
       </div>`
     : nothing;
@@ -497,9 +507,16 @@ function renderDetail() {
               ${kind}
             </button>`,
           )}
+          <button
+            class="chip log-sort"
+            title="Toggle log entry order"
+            @click=${toggleLogSortOrder}
+          >
+            ${state.logSortOrder === SORT_DESC ? "↓ Newest first" : "↑ Oldest first"}
+          </button>
         </div>
       </div>
-      ${state.sortOrder === SORT_DESC ? jumpBtn : nothing}
+      ${state.logSortOrder === SORT_DESC ? jumpBtn : nothing}
       <div class="stream">
         ${blocks.length
           ? blocks.map(streamBlock)
@@ -511,7 +528,7 @@ function renderDetail() {
                 : "no transcript yet for this agent"
             }</div>`}
       </div>
-      ${state.sortOrder === SORT_ASC ? jumpBtn : nothing}
+      ${state.logSortOrder === SORT_ASC ? jumpBtn : nothing}
     `,
     $detail,
   );
@@ -526,11 +543,11 @@ function renderDetail() {
 function isAtLatest() {
   const el = $detail;
   if (el.scrollHeight <= el.clientHeight) return "no-content";
-  if (state.sortOrder === SORT_DESC) return el.scrollTop < 40;
+  if (state.logSortOrder === SORT_DESC) return el.scrollTop < 40;
   return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
 }
 function scrollToLatest() {
-  if (state.sortOrder === SORT_DESC) $detail.scrollTop = 0;
+  if (state.logSortOrder === SORT_DESC) $detail.scrollTop = 0;
   else $detail.scrollTop = $detail.scrollHeight;
 }
 function jumpToLatest() {

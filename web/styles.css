@@ -112,6 +112,7 @@ main { display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
+.log-filters .log-sort { margin-left: auto; }
 
 /* ── agent cards ──────────────────────────────────────────────────────────── */
 .card {
