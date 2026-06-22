@@ -8,6 +8,7 @@ import type { Config, PhaseState } from "../types.js";
 import {
   branchHasDone,
   commitBuildLog,
+  lockfileRegenCmdFor,
   markResume,
   supervise,
   type SupervisorContext,
@@ -349,5 +350,27 @@ describe("supervise (routing)", () => {
     expect(out.kind).toBe("relaunch");
     expect(obj.lastMode).toBe("best-effort");
     expect(rec.supervisorAttempts).toBe(2);
+  });
+});
+
+describe("lockfileRegenCmdFor", () => {
+  it("infers the regen command for each package manager's lockfile", () => {
+    expect(lockfileRegenCmdFor("pnpm-lock.yaml")).toBe("pnpm install --lockfile-only");
+    expect(lockfileRegenCmdFor("package-lock.json")).toBe("npm install --package-lock-only");
+    expect(lockfileRegenCmdFor("npm-shrinkwrap.json")).toBe("npm install --package-lock-only");
+    expect(lockfileRegenCmdFor("yarn.lock")).toBe("yarn install --mode=update-lockfile");
+    expect(lockfileRegenCmdFor("bun.lock")).toBe("bun install");
+    expect(lockfileRegenCmdFor("bun.lockb")).toBe("bun install");
+  });
+
+  it("matches lockfiles in subdirectories (basename only)", () => {
+    expect(lockfileRegenCmdFor("packages/app/pnpm-lock.yaml")).toBe(
+      "pnpm install --lockfile-only",
+    );
+  });
+
+  it("returns undefined for non-lockfile paths", () => {
+    expect(lockfileRegenCmdFor("src/index.ts")).toBeUndefined();
+    expect(lockfileRegenCmdFor("Gemfile.lock")).toBeUndefined();
   });
 });

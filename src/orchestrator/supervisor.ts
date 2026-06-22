@@ -163,23 +163,78 @@ export async function commitBuildLog(
   return false;
 }
 
+// Every common JS lockfile, not just pnpm's. Each package-adding phase rewrites
+// its lockfile, so parallel phases collide there regardless of package manager.
+const DERIVED_CONFLICT_FILES_DEFAULT =
+  "^(pnpm-lock\\.yaml|package-lock\\.json|npm-shrinkwrap\\.json|yarn\\.lock|bun\\.lockb?)$";
+
 /**
- * Auto-resolve merge conflicts that touch ONLY derived files (the pnpm lockfile
- * by default). Regenerate them from the merged manifests and complete the merge.
- * Returns true on a clean auto-resolve. Mirrors `resolve_derived_conflicts`.
+ * Map a conflicted lockfile to the command that regenerates it from the
+ * (already merged) package.json set alone — no full install, no network where
+ * the manager supports it. Mirrors `lockfile_regen_cmd_for` in run-loop.sh.
+ */
+export function lockfileRegenCmdFor(file: string): string | undefined {
+  const base = file.split("/").pop() ?? file;
+  switch (base) {
+    case "pnpm-lock.yaml":
+      return "pnpm install --lockfile-only";
+    case "package-lock.json":
+    case "npm-shrinkwrap.json":
+      return "npm install --package-lock-only";
+    case "yarn.lock":
+      return "yarn install --mode=update-lockfile";
+    case "bun.lock":
+    case "bun.lockb":
+      return "bun install";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Auto-resolve merge conflicts that touch ONLY derived files (the package
+ * manager lockfile). Regenerate them from the merged manifests and complete the
+ * merge. Package-manager-agnostic out of the box: pnpm, npm, yarn, and bun
+ * lockfiles are all recognized and regenerated with the matching command,
+ * inferred from which lockfile is in conflict.
+ *
+ * Tunable via DERIVED_CONFLICT_FILES (ERE) — a conflict is only auto-resolved if
+ * every conflicted path matches it — and LOCKFILE_REGEN_CMD, which when set
+ * overrides the inferred regen command. Returns true on a clean auto-resolve.
+ * Mirrors `resolve_derived_conflicts`.
  */
 export async function resolveDerivedConflicts(
   git: Git,
   log?: (m: string) => void,
-  derivedRe = process.env["DERIVED_CONFLICT_FILES"] ?? "^pnpm-lock\\.yaml$",
-  regenCmd = process.env["LOCKFILE_REGEN_CMD"] ?? "pnpm install --lockfile-only",
+  derivedRe = process.env["DERIVED_CONFLICT_FILES"] ?? DERIVED_CONFLICT_FILES_DEFAULT,
+  regenCmdOverride = process.env["LOCKFILE_REGEN_CMD"],
 ): Promise<boolean> {
   const unresolved = await git.unresolvedConflicts();
   if (unresolved.length === 0) return false;
   const re = new RegExp(derivedRe);
   if (unresolved.some((f) => !re.test(f))) return false;
 
-  log?.(`  derived-only merge conflict; regenerating: ${unresolved.join(" ")}`);
+  // An explicit override wins; otherwise infer the regen command from the
+  // lockfile(s) in conflict so npm/yarn/bun/pnpm all work without config.
+  let regenCmd = regenCmdOverride;
+  if (!regenCmd) {
+    for (const f of unresolved) {
+      const cmd = lockfileRegenCmdFor(f);
+      if (cmd) {
+        regenCmd = cmd;
+        break;
+      }
+    }
+  }
+  if (!regenCmd) {
+    // Matched DERIVED_CONFLICT_FILES but unknown manager — set LOCKFILE_REGEN_CMD.
+    log?.(
+      `  derived-only merge conflict but no lockfile regen command for: ${unresolved.join(" ")}`,
+    );
+    return false;
+  }
+
+  log?.(`  derived-only merge conflict; regenerating (${regenCmd}): ${unresolved.join(" ")}`);
   for (const f of unresolved) await git.checkoutOurs(f);
   const r = await runShell(regenCmd, { cwd: (git as unknown as { cwd?: string }).cwd ?? process.cwd() });
   if (r.code !== 0) return false;
