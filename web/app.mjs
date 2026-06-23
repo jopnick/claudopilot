@@ -7,6 +7,35 @@ import { parseTranscript } from "/transcript.mjs";
 import { EV, streamUrl } from "/events.mjs";
 
 const TICK_MS = 1000; // refresh the "time on step" timers between pushes
+const AGENT_SORT_KEY = "claudopilot.agentSortOrder";
+const LOG_SORT_KEY = "claudopilot.logSortOrder";
+const LEGACY_SORT_KEY = "claudopilot.sortOrder";
+const SORT_BY_KEY = "claudopilot.sortBy";
+const HIDDEN_STATES_KEY = "claudopilot.hiddenStates";
+const SEARCH_KEY = "claudopilot.agentSearch";
+const BLOCK_FILTER_KEY = "claudopilot.blockFilter";
+const SORT_DESC = "desc"; // newest / highest priority first (default)
+const SORT_ASC = "asc"; // oldest / reverse priority (classic log tail)
+const SORT_BY_MANIFEST = "manifest";
+const SORT_BY_STATUS = "status";
+const SORT_BY_NAME = "name";
+const SORT_BY_PROGRESS = "progress";
+const STATE_RANK = { running: 0, blocked: 1, failed: 2, pending: 3, merged: 4 };
+const STATE_CHIPS = ["running", "blocked", "failed", "pending", "merged"];
+const BLOCK_KINDS = ["assistant", "tool", "thinking", "user", "result", "divider"];
+
+function loadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
 
 // Compact elapsed: 9s · 4m12s · 1h03m. Mirrors fmtDur in progress.mjs.
 function fmtDur(ms) {
@@ -28,6 +57,7 @@ function fmtTokens(n) {
 }
 
 // ── state ─────────────────────────────────────────────────────────────────
+const legacySort = localStorage.getItem(LEGACY_SORT_KEY);
 const state = {
   model: null, // last server-pushed progress snapshot
   error: null,
@@ -36,7 +66,145 @@ const state = {
   // transcript accumulator for the selected agent
   t: { id: null, raw: "", offset: 0, exists: false },
   autoFollow: true,
+  agentSortOrder: localStorage.getItem(AGENT_SORT_KEY) || legacySort || SORT_DESC,
+  logSortOrder: localStorage.getItem(LOG_SORT_KEY) || legacySort || SORT_DESC,
+  sortBy: localStorage.getItem(SORT_BY_KEY) || SORT_BY_MANIFEST,
+  hiddenStates: new Set(loadJson(HIDDEN_STATES_KEY, [])),
+  agentSearch: localStorage.getItem(SEARCH_KEY) || "",
+  hiddenBlockKinds: new Set(loadJson(BLOCK_FILTER_KEY, [])),
 };
+
+function orderedLogBlocks(items) {
+  if (state.logSortOrder === SORT_DESC) return [...items].reverse();
+  return items;
+}
+
+function toggleAgentSortOrder() {
+  state.agentSortOrder = state.agentSortOrder === SORT_DESC ? SORT_ASC : SORT_DESC;
+  localStorage.setItem(AGENT_SORT_KEY, state.agentSortOrder);
+  renderAgents();
+}
+
+function toggleLogSortOrder() {
+  state.logSortOrder = state.logSortOrder === SORT_DESC ? SORT_ASC : SORT_DESC;
+  localStorage.setItem(LOG_SORT_KEY, state.logSortOrder);
+  state.autoFollow = true;
+  renderDetail();
+  scrollToLatest();
+}
+
+function setSortBy(sortBy) {
+  state.sortBy = sortBy;
+  localStorage.setItem(SORT_BY_KEY, sortBy);
+  renderAgents();
+}
+
+function setAgentSearch(value) {
+  state.agentSearch = value;
+  localStorage.setItem(SEARCH_KEY, value);
+  renderAgents();
+}
+
+function toggleStateFilter(st) {
+  if (state.hiddenStates.has(st)) state.hiddenStates.delete(st);
+  else state.hiddenStates.add(st);
+  saveJson(HIDDEN_STATES_KEY, [...state.hiddenStates]);
+  renderAgents();
+}
+
+function showAllStates() {
+  state.hiddenStates.clear();
+  saveJson(HIDDEN_STATES_KEY, []);
+  renderAgents();
+}
+
+function setStatePreset(preset) {
+  if (preset === "all") {
+    showAllStates();
+    return;
+  }
+  const keep =
+    preset === "active"
+      ? new Set(["running", "pending", "blocked"])
+      : preset === "attention"
+        ? new Set(["running", "blocked", "failed"])
+        : preset === "done"
+          ? new Set(["merged"])
+          : null;
+  if (!keep) return;
+  state.hiddenStates = new Set(STATE_CHIPS.filter((st) => !keep.has(st)));
+  saveJson(HIDDEN_STATES_KEY, [...state.hiddenStates]);
+  renderAgents();
+}
+
+function toggleBlockKind(kind) {
+  if (state.hiddenBlockKinds.has(kind)) state.hiddenBlockKinds.delete(kind);
+  else state.hiddenBlockKinds.add(kind);
+  saveJson(BLOCK_FILTER_KEY, [...state.hiddenBlockKinds]);
+  renderDetail();
+}
+
+function showAllBlockKinds() {
+  state.hiddenBlockKinds.clear();
+  saveJson(BLOCK_FILTER_KEY, []);
+  renderDetail();
+}
+
+function phaseMatchesFilter(p) {
+  if (state.hiddenStates.size && state.hiddenStates.has(p.state)) return false;
+  if (state.agentSearch) {
+    const q = state.agentSearch.trim().toLowerCase();
+    if (q) {
+      const hay = `${p.id} ${p.title || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+  }
+  return true;
+}
+
+function sortPhases(phases, allPhases) {
+  const indexed = phases.map((p) => ({ p, idx: allPhases.indexOf(p) }));
+  const dir = state.agentSortOrder === SORT_DESC ? -1 : 1;
+  indexed.sort((a, b) => {
+    switch (state.sortBy) {
+      case SORT_BY_STATUS: {
+        const dr = STATE_RANK[a.p.state] - STATE_RANK[b.p.state];
+        return dr !== 0 ? dr * dir : (a.idx - b.idx) * dir;
+      }
+      case SORT_BY_NAME:
+        return a.p.id.localeCompare(b.p.id) * dir;
+      case SORT_BY_PROGRESS: {
+        const pa = a.p.slicesTotal ? a.p.slicesDone / a.p.slicesTotal : -1;
+        const pb = b.p.slicesTotal ? b.p.slicesDone / b.p.slicesTotal : -1;
+        return pa !== pb ? (pa - pb) * dir : (a.idx - b.idx) * dir;
+      }
+      default:
+        return (a.idx - b.idx) * dir;
+    }
+  });
+  return indexed.map(({ p }) => p);
+}
+
+function visiblePhases(allPhases) {
+  const filtered = allPhases.filter(phaseMatchesFilter);
+  let sorted = sortPhases(filtered, allPhases);
+  if (state.selectedId && !sorted.some((p) => p.id === state.selectedId)) {
+    const selected = allPhases.find((p) => p.id === state.selectedId);
+    if (selected) sorted = [selected, ...sorted];
+  }
+  return sorted;
+}
+
+function filterBlocks(blocks) {
+  if (!state.hiddenBlockKinds.size) return blocks;
+  return blocks.filter((b) => !state.hiddenBlockKinds.has(b.kind));
+}
+
+function stateCounts(phases) {
+  const counts = Object.fromEntries(STATE_CHIPS.map((st) => [st, 0]));
+  for (const p of phases) counts[p.state] = (counts[p.state] || 0) + 1;
+  return counts;
+}
 
 const $header = document.getElementById("header");
 const $agents = document.getElementById("agents");
@@ -133,11 +301,61 @@ function renderHeader() {
   );
 }
 
-function agentCard(p, i) {
+function agentsToolbar(phases) {
+  const counts = stateCounts(phases);
+  const filtering = state.hiddenStates.size > 0 || state.agentSearch.trim();
+  return html`
+    <div class="agents-toolbar">
+      <input
+        class="agent-search"
+        type="search"
+        placeholder="Filter agents…"
+        .value=${state.agentSearch}
+        @input=${(e) => setAgentSearch(e.target.value)}
+      />
+      <div class="filter-row">
+        <span class="filter-label">Show</span>
+        <button class="chip preset" @click=${() => setStatePreset("all")}>All</button>
+        <button class="chip preset" @click=${() => setStatePreset("active")}>Active</button>
+        <button class="chip preset" @click=${() => setStatePreset("attention")}>Attention</button>
+        <button class="chip preset" @click=${() => setStatePreset("done")}>Done</button>
+      </div>
+      <div class="filter-row">
+        ${STATE_CHIPS.map(
+          (st) => html`<button
+            class="chip state-${st} ${state.hiddenStates.has(st) ? "off" : "on"}"
+            @click=${() => toggleStateFilter(st)}
+          >
+            ${st}${counts[st] ? html` <span class="chip-count">${counts[st]}</span>` : nothing}
+          </button>`,
+        )}
+        ${filtering
+          ? html`<button class="chip reset" @click=${showAllStates}>Clear filters</button>`
+          : nothing}
+      </div>
+      <div class="filter-row sort-row">
+        <label class="filter-label">
+          Sort
+          <select @change=${(e) => setSortBy(e.target.value)} .value=${state.sortBy}>
+            <option value=${SORT_BY_MANIFEST}>Manifest order</option>
+            <option value=${SORT_BY_STATUS}>Status</option>
+            <option value=${SORT_BY_NAME}>Name</option>
+            <option value=${SORT_BY_PROGRESS}>Progress</option>
+          </select>
+        </label>
+        <button class="chip" title="Toggle agent list sort direction" @click=${toggleAgentSortOrder}>
+          ${state.agentSortOrder === SORT_DESC ? "↓ Newest first" : "↑ Oldest first"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function agentCard(p, pinned) {
   const pct = p.slicesTotal ? Math.round((100 * p.slicesDone) / p.slicesTotal) : 0;
   return html`
     <div
-      class="card ${p.id === state.selectedId ? "selected" : ""}"
+      class="card ${p.id === state.selectedId ? "selected" : ""} ${pinned ? "pinned" : ""}"
       @click=${() => selectAgent(p.id)}
     >
       <div class="row1">
@@ -181,10 +399,23 @@ function agentCard(p, i) {
 
 function renderAgents() {
   const m = state.model;
+  if (!m || !m.phases) {
+    render(
+      html`<div class="empty">${state.error ? "no run found" : "loading…"}</div>`,
+      $agents,
+    );
+    return;
+  }
+  const all = m.phases;
+  const visible = visiblePhases(all);
+  const pinned = state.selectedId && !all.filter(phaseMatchesFilter).some((p) => p.id === state.selectedId);
   render(
-    m && m.phases
-      ? html`${m.phases.map((p, i) => agentCard(p, i))}`
-      : html`<div class="empty">${state.error ? "no run found" : "loading…"}</div>`,
+    html`
+      ${agentsToolbar(all)}
+      ${visible.length
+        ? visible.map((p) => agentCard(p, pinned && p.id === state.selectedId))
+        : html`<div class="empty">No agents match the current filters.</div>`}
+    `,
     $agents,
   );
 }
@@ -225,8 +456,16 @@ function renderDetail() {
     return;
   }
   const p = selectedPhase();
-  const blocks = parseTranscript(state.t.raw);
-  const wasAtBottom = isAtBottom();
+  const blocks = filterBlocks(orderedLogBlocks(parseTranscript(state.t.raw)));
+  const wasAtLatest = isAtLatest();
+
+  const jumpBtn = !state.autoFollow
+    ? html`<div class="scroll-pause">
+        <button @click=${jumpToLatest}>
+          ${state.logSortOrder === SORT_DESC ? "↑ Jump to latest" : "↓ Jump to latest"}
+        </button>
+      </div>`
+    : nothing;
 
   render(
     html`
@@ -257,46 +496,69 @@ function renderDetail() {
                   </ul>`
                 : nothing}`
           : nothing}
+        <div class="log-filters">
+          <span class="filter-label">Log types</span>
+          <button class="chip preset" @click=${showAllBlockKinds}>All</button>
+          ${BLOCK_KINDS.map(
+            (kind) => html`<button
+              class="chip ${state.hiddenBlockKinds.has(kind) ? "off" : "on"}"
+              @click=${() => toggleBlockKind(kind)}
+            >
+              ${kind}
+            </button>`,
+          )}
+          <button
+            class="chip log-sort"
+            title="Toggle log entry order"
+            @click=${toggleLogSortOrder}
+          >
+            ${state.logSortOrder === SORT_DESC ? "↓ Newest first" : "↑ Oldest first"}
+          </button>
+        </div>
       </div>
+      ${state.logSortOrder === SORT_DESC ? jumpBtn : nothing}
       <div class="stream">
         ${blocks.length
           ? blocks.map(streamBlock)
           : html`<div class="empty">${
-              state.t.exists ? "transcript is empty so far…" : "no transcript yet for this agent"
+              state.t.exists
+                ? state.hiddenBlockKinds.size
+                  ? "No log entries match the current filters."
+                  : "transcript is empty so far…"
+                : "no transcript yet for this agent"
             }</div>`}
       </div>
-      ${!state.autoFollow
-        ? html`<div class="scroll-pause">
-            <button @click=${jumpToLatest}>↓ Jump to latest</button>
-          </div>`
-        : nothing}
+      ${state.logSortOrder === SORT_ASC ? jumpBtn : nothing}
     `,
     $detail,
   );
 
-  if (state.autoFollow && wasAtBottom !== "no-content") {
-    scrollToBottom();
+  if (state.autoFollow && wasAtLatest !== "no-content") {
+    scrollToLatest();
   }
 }
 
 // ── scroll handling ─────────────────────────────────────────────────────────
-function isAtBottom() {
+// "Latest" is at the top in newest-first mode and at the bottom in oldest-first mode.
+function isAtLatest() {
   const el = $detail;
   if (el.scrollHeight <= el.clientHeight) return "no-content";
+  if (state.logSortOrder === SORT_DESC) return el.scrollTop < 40;
   return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
 }
-function scrollToBottom() {
-  $detail.scrollTop = $detail.scrollHeight;
+function scrollToLatest() {
+  if (state.logSortOrder === SORT_DESC) $detail.scrollTop = 0;
+  else $detail.scrollTop = $detail.scrollHeight;
 }
 function jumpToLatest() {
   state.autoFollow = true;
-  scrollToBottom();
+  scrollToLatest();
   renderDetail();
 }
 $detail.addEventListener("scroll", () => {
-  const atBottom = isAtBottom();
-  if (atBottom === true) state.autoFollow = true;
-  else if (atBottom === false) state.autoFollow = false;
+  const atLatest = isAtLatest();
+  if (atLatest === true) state.autoFollow = true;
+  else if (atLatest === false) state.autoFollow = false;
 });
 
 // ── actions ─────────────────────────────────────────────────────────────────
