@@ -44,8 +44,75 @@ header .driver { color: var(--dim); font-family: var(--mono); font-size: 12px; m
 
 /* ── layout ───────────────────────────────────────────────────────────────── */
 main { display: grid; grid-template-columns: 360px 1fr; min-height: 0; }
-.agents { border-right: 1px solid var(--border); overflow-y: auto; background: var(--bg); }
+.agents { border-right: 1px solid var(--border); overflow-y: auto; background: var(--bg); display: flex; flex-direction: column; }
 .detail { overflow-y: auto; min-width: 0; display: flex; flex-direction: column; }
+
+/* ── agents toolbar / filters ─────────────────────────────────────────────── */
+.agents-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-search {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px var(--mono);
+}
+.agent-search:focus { outline: none; border-color: var(--accent); }
+.filter-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.filter-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; }
+.filter-label select {
+  margin-left: 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px var(--mono);
+}
+.sort-row { justify-content: space-between; }
+.chip {
+  font: 11px var(--mono);
+  text-transform: lowercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.chip:hover { color: var(--accent); border-color: var(--accent); }
+.chip.on { color: var(--fg); border-color: var(--border); background: var(--panel-2); }
+.chip.off { opacity: .45; text-decoration: line-through; }
+.chip.preset { text-transform: capitalize; }
+.chip.reset { color: var(--accent); border-color: transparent; text-transform: none; }
+.chip.state-running.on { color: var(--running); border-color: var(--running); }
+.chip.state-blocked.on { color: var(--blocked); border-color: var(--blocked); }
+.chip.state-failed.on { color: var(--failed); border-color: var(--failed); }
+.chip.state-pending.on { color: var(--pending); border-color: var(--pending); }
+.chip.state-merged.on { color: var(--merged); border-color: var(--merged); }
+.chip-count { opacity: .7; }
+.card.pinned { border-left-color: var(--dim); opacity: .85; }
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.log-filters .log-sort { margin-left: auto; }
 
 /* ── agent cards ──────────────────────────────────────────────────────────── */
 .card {
