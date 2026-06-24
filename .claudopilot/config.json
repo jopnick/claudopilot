@@ -1,0 +1,5 @@
+{
+  "gateCmd": "pnpm -s typecheck && pnpm -s test",
+  "worktreePrepareCmd": "pnpm install --prefer-offline",
+  "maxParallel": 3
+}

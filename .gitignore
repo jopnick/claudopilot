@@ -1,7 +1,5 @@
 node_modules/
 .claude/
-.claudopilot/
-.claudopilot.log
 *.log
 build-logs/
 .DS_Store
@@ -10,3 +8,6 @@ build-logs/
 dist/
 coverage/
 .pnpm-store/
+
+# claudopilot run-state (worktrees, captures, control, log)
+.claudopilot/.run/
