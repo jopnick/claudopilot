@@ -15,10 +15,26 @@
  *   --version | --help
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "./config.js";
+import {
+  loadConfig,
+  extractShellConfig,
+  shellEnvToJsonConfig,
+} from "./config.js";
 import { Git } from "./git.js";
 import { Docker, type Mount, type RunSpec } from "./docker.js";
 import type { DockerLike, DockerRunOpts, DockerRunResult } from "./orchestrator/types.js";
@@ -285,6 +301,235 @@ function cmdInit(args: readonly string[]): number {
   return 0;
 }
 
+// ── migrate ──────────────────────────────────────────────────────────────────
+
+/** True if `cwd` is inside a git work tree. */
+function inGitRepo(cwd: string): boolean {
+  const r = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd,
+    encoding: "utf8",
+  });
+  return r.status === 0 && r.stdout.trim() === "true";
+}
+
+/** True if `rel` (relative to cwd) is a git-tracked path. */
+function isTracked(cwd: string, rel: string): boolean {
+  const r = spawnSync("git", ["ls-files", "--error-unmatch", "--", rel], {
+    cwd,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  return r.status === 0;
+}
+
+/**
+ * Move `srcRel` → `destRel` (paths relative to cwd), preferring `git mv` for
+ * tracked files so history follows the move. Creates the destination parent.
+ * Honors `dryRun` (logs only). Returns true if a move was performed/planned.
+ */
+function movePath(
+  cwd: string,
+  srcRel: string,
+  destRel: string,
+  git: boolean,
+  dryRun: boolean,
+): boolean {
+  const src = join(cwd, srcRel);
+  const dest = join(cwd, destRel);
+  if (!existsSync(src)) return false;
+  if (existsSync(dest)) {
+    writeOut(`  skip   ${destRel} (exists; left as-is)`);
+    return false;
+  }
+  writeOut(`  ${dryRun ? "would move" : "move  "} ${srcRel} → ${destRel}`);
+  if (dryRun) return true;
+  mkdirSync(dirname(dest), { recursive: true });
+  if (git && isTracked(cwd, srcRel)) {
+    const r = spawnSync("git", ["mv", srcRel, destRel], { cwd, encoding: "utf8" });
+    if (r.status === 0) return true;
+    // Fall through to a plain rename if git mv refused (e.g. partially staged).
+  }
+  renameSync(src, dest);
+  return true;
+}
+
+/** Remove `rel` (file), via `git rm` when tracked so the deletion is staged. */
+function removePath(cwd: string, rel: string, git: boolean, dryRun: boolean): void {
+  const abs = join(cwd, rel);
+  if (!existsSync(abs)) return;
+  writeOut(`  ${dryRun ? "would remove" : "remove"} ${rel}`);
+  if (dryRun) return;
+  if (git && isTracked(cwd, rel)) {
+    const r = spawnSync("git", ["rm", "-q", "--", rel], { cwd });
+    if (r.status === 0) return;
+  }
+  rmSync(abs, { force: true });
+}
+
+/**
+ * Rewrite `.gitignore` for the 1.0 layout: a bare `.claudopilot/` ignore would
+ * now hide the committed config/prompts/roadmap, so replace it (and the old
+ * `.claudopilot.log`) with the precise run-state ignore. Idempotent.
+ */
+function migrateGitignore(cwd: string, dryRun: boolean): void {
+  const gitignore = join(cwd, ".gitignore");
+  let body = "";
+  try {
+    body = readFileSync(gitignore, "utf8");
+  } catch {
+    /* none yet */
+  }
+  const STALE = new Set([".claudopilot/", ".claudopilot", ".claudopilot.log"]);
+  const kept: string[] = [];
+  let changed = false;
+  let hasRunIgnore = false;
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t === RUN_STATE_IGNORE || t === ".claudopilot/.run") hasRunIgnore = true;
+    if (STALE.has(t)) {
+      changed = true; // drop it
+      continue;
+    }
+    kept.push(line);
+  }
+  if (!hasRunIgnore) {
+    // Trim a trailing blank then append the run-state ignore.
+    while (kept.length && kept[kept.length - 1]!.trim() === "") kept.pop();
+    kept.push("", "# claudopilot run-state (worktrees, captures, control, log)", RUN_STATE_IGNORE, "");
+    changed = true;
+  }
+  if (!changed) {
+    writeOut(`  ok     .gitignore already 1.0-clean`);
+    return;
+  }
+  writeOut(`  ${dryRun ? "would update" : "update"} .gitignore (→ ${RUN_STATE_IGNORE}, drop bare .claudopilot/)`);
+  if (!dryRun) writeFileSync(gitignore, kept.join("\n"));
+}
+
+/**
+ * `claudopilot migrate [--dry-run]` — move a pre-1.0 repo onto the .claudopilot/
+ * layout: convert claudopilot.config.sh → .claudopilot/config.json, relocate
+ * ./roadmap and ./claudopilot/prompts under .claudopilot/, and fix .gitignore.
+ * Idempotent and non-destructive (skips anything already present); --dry-run
+ * prints the plan without touching disk.
+ */
+async function cmdMigrate(args: readonly string[]): Promise<number> {
+  const dryRun = args.includes("--dry-run");
+  const cwd = process.cwd();
+  const git = inGitRepo(cwd);
+
+  const hasOldConfig = existsSync(join(cwd, "claudopilot.config.sh"));
+  const hasNewConfig = existsSync(join(cwd, ".claudopilot/config.json"));
+  const hasOldRoadmap =
+    existsSync(join(cwd, "roadmap")) && !existsSync(join(cwd, ".claudopilot/roadmap"));
+  const promptsDir = join(cwd, "claudopilot", "prompts");
+  const hasOldPrompts =
+    existsSync(promptsDir) && !existsSync(join(cwd, ".claudopilot/prompts"));
+
+  const hasNewLayout =
+    hasNewConfig ||
+    existsSync(join(cwd, ".claudopilot/roadmap")) ||
+    existsSync(join(cwd, ".claudopilot/prompts"));
+
+  if (!hasOldConfig && !hasOldRoadmap && !hasOldPrompts) {
+    writeOut(
+      hasNewLayout
+        ? "Already on the .claudopilot/ layout — nothing to migrate."
+        : "No pre-1.0 layout found (no claudopilot.config.sh, ./roadmap, or ./claudopilot/prompts). Nothing to migrate.",
+    );
+    return 0;
+  }
+
+  writeOut(
+    `Migrating ${cwd} to the .claudopilot/ layout${dryRun ? " (dry run — no changes written)" : ""}`,
+  );
+  if (!git) {
+    writeOut("  note   not a git repo — moves use plain rename (no history preservation).");
+  }
+
+  // 1. Config: claudopilot.config.sh → .claudopilot/config.json
+  writeOut("\nConfig:");
+  if (hasNewConfig) {
+    writeOut("  skip   .claudopilot/config.json already exists");
+  } else if (hasOldConfig) {
+    const env = await extractShellConfig(join(cwd, "claudopilot.config.sh"));
+    const jsonConfig = shellEnvToJsonConfig(env);
+    // Drop layout-pointer keys: they named the OLD locations (and shell-only
+    // `$REPO_ROOT` expansions don't survive extraction), and the migrated
+    // .claudopilot/ layout resolves them by default. Behavioral knobs stay.
+    const LAYOUT_KEYS = [
+      "roadmapDir",
+      "manifest",
+      "promptFile",
+      "supervisorPromptFile",
+      "workerProjectPrompt",
+      "supervisorProjectPrompt",
+    ];
+    const dropped = LAYOUT_KEYS.filter((k) => k in jsonConfig);
+    for (const k of dropped) delete jsonConfig[k];
+    const dest = ".claudopilot/config.json";
+    const keys = Object.keys(jsonConfig).length;
+    writeOut(`  ${dryRun ? "would write" : "write "} ${dest} (${keys} setting${keys === 1 ? "" : "s"} from claudopilot.config.sh)`);
+    if (dropped.length) {
+      writeOut(`  note   dropped layout pointers now resolved by default: ${dropped.join(", ")} (re-add only if you used non-standard locations)`);
+    }
+    if (!dryRun) {
+      mkdirSync(join(cwd, ".claudopilot"), { recursive: true });
+      writeFileSync(join(cwd, dest), JSON.stringify(jsonConfig, null, 2) + "\n");
+    }
+    removePath(cwd, "claudopilot.config.sh", git, dryRun);
+  } else {
+    writeOut("  skip   no claudopilot.config.sh");
+  }
+
+  // 2. Roadmap: ./roadmap → .claudopilot/roadmap
+  writeOut("\nRoadmap:");
+  if (hasOldRoadmap) {
+    for (const name of readdirSync(join(cwd, "roadmap"))) {
+      movePath(cwd, join("roadmap", name), join(".claudopilot", "roadmap", name), git, dryRun);
+    }
+    if (!dryRun) tryRemoveEmptyDir(join(cwd, "roadmap"));
+  } else {
+    writeOut("  skip   ./roadmap not present (or already migrated)");
+  }
+
+  // 3. Prompts: ./claudopilot/prompts → .claudopilot/prompts
+  writeOut("\nPrompts:");
+  if (hasOldPrompts && lstatSync(join(cwd, "claudopilot")).isSymbolicLink()) {
+    writeOut("  skip   ./claudopilot is a symlink — leaving it; set promptFile in config.json if needed.");
+  } else if (hasOldPrompts) {
+    for (const name of readdirSync(promptsDir)) {
+      movePath(cwd, join("claudopilot", "prompts", name), join(".claudopilot", "prompts", name), git, dryRun);
+    }
+    if (!dryRun) {
+      tryRemoveEmptyDir(promptsDir);
+      tryRemoveEmptyDir(join(cwd, "claudopilot"));
+    }
+    writeOut("  note   review .claudopilot/prompts/*.md — update any `roadmap/` references to `.claudopilot/roadmap/`.");
+  } else {
+    writeOut("  skip   ./claudopilot/prompts not present (or already migrated)");
+  }
+
+  // 4. .gitignore
+  writeOut("\nVersion control:");
+  migrateGitignore(cwd, dryRun);
+
+  writeOut(
+    dryRun
+      ? "\nDry run complete. Re-run without --dry-run to apply."
+      : "\nDone. Review the changes, then commit. (Your config/roadmap/prompts are now under .claudopilot/.)",
+  );
+  return 0;
+}
+
+/** Remove a directory only if it is empty; ignore errors. */
+function tryRemoveEmptyDir(dir: string): void {
+  try {
+    if (readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch {
+    /* not empty / not removable — leave it */
+  }
+}
+
 // ── progress ───────────────────────────────────────────────────────────────
 
 async function cmdProgress(args: readonly string[]): Promise<number> {
@@ -538,6 +783,9 @@ Usage:
                                           Scaffold this repo (vendor engine + config stubs).
                                           Never overwrites your project files; --with-examples
                                           adds a sample roadmap; --force re-vendors the engine.
+  claudopilot migrate [--dry-run]         Move a pre-1.0 repo onto the .claudopilot/ layout
+                                          (config.sh → config.json, ./roadmap + ./claudopilot/
+                                          prompts → .claudopilot/). --dry-run previews.
   claudopilot run [--isolated|--shell]    Build the image and run the loop
   claudopilot progress [args…]            Read-only progress view of a run
   claudopilot web [--port N] [--host H]   Local web dashboard
@@ -553,6 +801,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   switch (cmd) {
     case "init":
       return cmdInit(rest);
+    case "migrate":
+      return await cmdMigrate(rest);
     case "run":
       return await cmdRun(rest);
     case "progress":

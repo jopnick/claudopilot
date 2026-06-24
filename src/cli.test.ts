@@ -184,3 +184,116 @@ describe("cli progress --json", () => {
     expect(parsed.phases[0]?.id).toBe("phase-Y");
   });
 });
+
+describe("cli migrate", () => {
+  let tmp: string;
+  let cwdSpy: { mockRestore: () => void };
+  const read = (rel: string): string => readFileSync(path.join(tmp, rel), "utf8");
+  const exists = async (rel: string): Promise<boolean> =>
+    fs
+      .stat(path.join(tmp, rel))
+      .then(() => true)
+      .catch(() => false);
+
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "cp-migrate-"));
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmp);
+  });
+  afterEach(async () => {
+    cwdSpy.mockRestore();
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it("reports nothing to migrate on a clean dir", async () => {
+    const { result, io } = await captureStdio(() => main(["migrate"]));
+    expect(result).toBe(0);
+    expect(io.stdout).toContain("No pre-1.0 layout found");
+  });
+
+  it("moves ./roadmap + ./claudopilot/prompts under .claudopilot/ and removes the old dirs", async () => {
+    await fs.mkdir(path.join(tmp, "roadmap"), { recursive: true });
+    await fs.mkdir(path.join(tmp, "claudopilot", "prompts"), { recursive: true });
+    await fs.writeFile(path.join(tmp, "roadmap", "EXECUTION-MANIFEST.md"), "# m\n");
+    await fs.writeFile(path.join(tmp, "roadmap", "phase-01-a.md"), "# a\n");
+    await fs.writeFile(path.join(tmp, "claudopilot", "prompts", "worker.md"), "# w\n");
+
+    const { result } = await captureStdio(() => main(["migrate"]));
+    expect(result).toBe(0);
+    expect(await exists(".claudopilot/roadmap/EXECUTION-MANIFEST.md")).toBe(true);
+    expect(await exists(".claudopilot/roadmap/phase-01-a.md")).toBe(true);
+    expect(await exists(".claudopilot/prompts/worker.md")).toBe(true);
+    // Old dirs are gone (emptied + removed).
+    expect(await exists("roadmap")).toBe(false);
+    expect(await exists("claudopilot")).toBe(false);
+  });
+
+  it("rewrites .gitignore: drops a bare .claudopilot/ + .claudopilot.log, adds .run/", async () => {
+    await fs.mkdir(path.join(tmp, "roadmap"), { recursive: true });
+    await fs.writeFile(path.join(tmp, "roadmap", "x.md"), "# x\n");
+    await fs.writeFile(
+      path.join(tmp, ".gitignore"),
+      "node_modules/\n.claudopilot/\n.claudopilot.log\n",
+    );
+    const { result } = await captureStdio(() => main(["migrate"]));
+    expect(result).toBe(0);
+    const ig = read(".gitignore");
+    expect(ig).toContain("node_modules/");
+    expect(ig).toContain(".claudopilot/.run/");
+    expect(ig.split("\n").map((l) => l.trim())).not.toContain(".claudopilot/");
+    expect(ig.split("\n").map((l) => l.trim())).not.toContain(".claudopilot.log");
+  });
+
+  it("--dry-run writes nothing", async () => {
+    await fs.mkdir(path.join(tmp, "roadmap"), { recursive: true });
+    await fs.writeFile(path.join(tmp, "roadmap", "x.md"), "# x\n");
+    const { result, io } = await captureStdio(() => main(["migrate", "--dry-run"]));
+    expect(result).toBe(0);
+    expect(io.stdout).toContain("dry run");
+    expect(await exists(".claudopilot/roadmap/x.md")).toBe(false);
+    expect(await exists("roadmap/x.md")).toBe(true);
+  });
+
+  it("is idempotent (second run is a no-op)", async () => {
+    await fs.mkdir(path.join(tmp, "roadmap"), { recursive: true });
+    await fs.writeFile(path.join(tmp, "roadmap", "x.md"), "# x\n");
+    await captureStdio(() => main(["migrate"]));
+    const { result, io } = await captureStdio(() => main(["migrate"]));
+    expect(result).toBe(0);
+    expect(io.stdout).toContain("Already on the .claudopilot/ layout");
+  });
+
+  // Shell-config conversion forks bash; Windows CI runners lack it.
+  it.skipIf(process.platform === "win32")(
+    "converts claudopilot.config.sh → .claudopilot/config.json with typed values",
+    async () => {
+      await fs.writeFile(
+        path.join(tmp, "claudopilot.config.sh"),
+        `export GATE_CMD='pnpm test'\nexport MAX_PARALLEL=5\nexport KEEP_GOING=1\nexport RETRY_TRANSIENT_API=0\n`,
+      );
+      const { result } = await captureStdio(() => main(["migrate"]));
+      expect(result).toBe(0);
+      expect(await exists("claudopilot.config.sh")).toBe(false);
+      const cfg = JSON.parse(read(".claudopilot/config.json")) as Record<string, unknown>;
+      expect(cfg["gateCmd"]).toBe("pnpm test");
+      expect(cfg["maxParallel"]).toBe(5);
+      expect(cfg["keepGoing"]).toBe(true);
+      expect(cfg["retryTransientApi"]).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "drops layout-pointer keys (roadmapDir/manifest) so the new defaults apply",
+    async () => {
+      await fs.writeFile(
+        path.join(tmp, "claudopilot.config.sh"),
+        `export GATE_CMD='x'\nexport ROADMAP_DIR='roadmap'\nexport MANIFEST="$REPO_ROOT/roadmap/EXECUTION-MANIFEST.md"\n`,
+      );
+      const { result } = await captureStdio(() => main(["migrate"]));
+      expect(result).toBe(0);
+      const cfg = JSON.parse(read(".claudopilot/config.json")) as Record<string, unknown>;
+      expect(cfg["gateCmd"]).toBe("x");
+      expect(cfg).not.toHaveProperty("roadmapDir");
+      expect(cfg).not.toHaveProperty("manifest");
+    },
+  );
+});

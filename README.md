@@ -188,6 +188,34 @@ roadmap, the prompt overlay) — re-running it only fills in what's missing.
 > `./roadmap/`; and if `.claudopilot/prompts/` is absent it falls back to
 > `./claudopilot/prompts/`.
 
+### Migrating from the pre-1.0 layout
+
+`claudopilot migrate` moves an existing repo onto the `.claudopilot/` layout in
+one step:
+
+```bash
+claudopilot migrate --dry-run   # preview every change; writes nothing
+claudopilot migrate             # apply it
+```
+
+It:
+
+- converts `claudopilot.config.sh` → `.claudopilot/config.json` (running the
+  shell file once and serialising the settings it contributes, with the right
+  JSON types), then removes the `.sh`;
+- moves `./roadmap/` → `.claudopilot/roadmap/` and `./claudopilot/prompts/` →
+  `.claudopilot/prompts/`, using `git mv` for tracked files so history follows
+  the rename;
+- rewrites `.gitignore` — a bare `.claudopilot/` ignore would now hide your
+  committed config, so it's replaced with the precise `.claudopilot/.run/`
+  (and the old `.claudopilot.log` line is dropped).
+
+It is idempotent and non-destructive: anything already in place is left alone,
+and a second run is a no-op. After migrating, **review your
+`.claudopilot/prompts/*.md`** and update any hard-coded `roadmap/…` references to
+`.claudopilot/roadmap/…`. The back-compat fallbacks above mean migrating is
+optional — `migrate` is a convenience, supported through the 1.x line.
+
 ### Web dashboard
 
 `claudopilot web` starts a tiny **localhost-only**, read-only server (default port

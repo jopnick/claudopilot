@@ -53,6 +53,55 @@ const JSON_TO_ENV: Record<string, string> = {
 };
 const KNOWN_ENV = new Set(Object.values(JSON_TO_ENV));
 
+/** Inverse of {@link JSON_TO_ENV}: SHOUTY env key → camelCase config key. */
+export const ENV_TO_JSON: Record<string, string> = Object.fromEntries(
+  Object.entries(JSON_TO_ENV).map(([json, env]) => [env, json]),
+);
+
+/** Config env keys whose values are booleans ("0"/"1" in shell). */
+export const BOOL_ENV_KEYS = new Set([
+  "CLAUDOPILOT_ISOLATED",
+  "KEEP_GOING",
+  "IGNORE_LOOP_CHECKPOINTS",
+  "RETRY_TRANSIENT_API",
+]);
+
+/** Config env keys whose values are integers. */
+export const INT_ENV_KEYS = new Set([
+  "MAX_PARALLEL",
+  "POLL_SECONDS",
+  "MAX_ITER",
+  "MAX_SUPERVISOR_ATTEMPTS_PER_PHASE",
+  "USAGE_WINDOW_SECONDS",
+  "MAX_TICKS_PER_WINDOW",
+  "USAGE_THRESHOLD_PCT",
+  "DEFAULT_RATE_LIMIT_SLEEP",
+  "TRANSIENT_API_MAX_RETRIES",
+  "STUCK_TIMEOUT",
+]);
+
+/**
+ * Convert a SHOUTY env map (as produced by {@link extractShellConfig}) into the
+ * camelCase JSON config object — the `claudopilot migrate` conversion. Only
+ * recognised keys are carried over; values are coerced to boolean/number per
+ * {@link BOOL_ENV_KEYS} / {@link INT_ENV_KEYS}, everything else stays a string.
+ */
+export function shellEnvToJsonConfig(
+  env: Record<string, string>,
+): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const [envKey, raw] of Object.entries(env)) {
+    const jsonKey = ENV_TO_JSON[envKey];
+    if (!jsonKey) continue;
+    if (BOOL_ENV_KEYS.has(envKey)) out[jsonKey] = raw === "1";
+    else if (INT_ENV_KEYS.has(envKey)) {
+      const n = Number.parseInt(raw, 10);
+      if (Number.isFinite(n)) out[jsonKey] = n;
+    } else out[jsonKey] = raw;
+  }
+  return out;
+}
+
 interface ResolvedConfigFile {
   path: string;
   format: "json" | "sh";
