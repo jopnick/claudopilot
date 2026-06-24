@@ -40,6 +40,7 @@ import {
 } from "../agent/detect.js";
 import { captureAgent } from "../agent/capture.js";
 import { onShutdown, installShutdownHandlers } from "../platform/signals.js";
+import { runDir } from "../platform/paths.js";
 import type { DockerLike, WorkerExit, WorkerRecord } from "./types.js";
 import {
   prepareWorktree,
@@ -324,7 +325,7 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
     if (config.isolated && deps.docker) {
       // Write supervisor prompt to the clone, then run worker container (the
       // entrypoint reads the same prompt file — the agent body just changes).
-      const promptDir = path.join(args.record.worktree, ".claudopilot");
+      const promptDir = runDir(args.record.worktree);
       await fs.mkdir(promptDir, { recursive: true });
       const promptPath = path.join(promptDir, `${args.id}.prompt.txt`);
       await fs.writeFile(promptPath, args.prompt + workerPromptSuffixIsolated(args.id), "utf8");

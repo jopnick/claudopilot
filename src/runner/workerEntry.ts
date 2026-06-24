@@ -28,6 +28,7 @@ import {
 } from "node:fs";
 import type { CapturePaths } from "../types.js";
 import { spawnCapture } from "../platform/process.js";
+import { runDirPosix } from "../platform/paths.js";
 
 // ── parse + paths ───────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ export function capturePaths(
   // always join POSIX-style — never the host's `path.sep`. At runtime this code
   // runs in the container (posix anyway); using path.posix keeps it correct when
   // exercised from a Windows host (tests).
-  const dir = path.posix.join(workdir, ".claudopilot");
+  const dir = runDirPosix(workdir);
   return {
     log: path.posix.join(dir, `${phaseId}.log`),
     stream: path.posix.join(dir, `${phaseId}.stream.jsonl`),

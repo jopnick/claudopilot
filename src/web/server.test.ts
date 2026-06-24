@@ -184,7 +184,7 @@ describe("web server SSE + control + validation", () => {
   let port: number;
   const seedTranscript = "first line\nsecond line\n";
   const transcriptFile = (): string =>
-    path.join(root, ".claudopilot", "phase-test.transcript.md");
+    path.join(root, ".claudopilot", ".run", "phase-test.transcript.md");
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "cp-web-"));
@@ -192,7 +192,7 @@ describe("web server SSE + control + validation", () => {
     webDir = path.join(root, "web");
     await fs.mkdir(roadmap, { recursive: true });
     await fs.mkdir(webDir, { recursive: true });
-    await fs.mkdir(path.join(root, ".claudopilot"), { recursive: true });
+    await fs.mkdir(path.join(root, ".claudopilot", ".run"), { recursive: true });
 
     manifest = path.join(roadmap, "EXECUTION-MANIFEST.md");
     await fs.writeFile(
@@ -307,7 +307,7 @@ describe("web server SSE + control + validation", () => {
     const { code, body } = await postControl(port, "phase-test", "poke");
     expect(code).toBe(200);
     expect(JSON.parse(body)).toMatchObject({ ok: true, id: "phase-test", action: "poke" });
-    const f = path.join(root, ".claudopilot", "control", "phase-test.poke");
+    const f = path.join(root, ".claudopilot", ".run", "control", "phase-test.poke");
     const st = await fs.stat(f);
     expect(st.isFile()).toBe(true);
   });
