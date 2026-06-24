@@ -81,7 +81,7 @@ async function buildFixture(): Promise<{ root: string; manifest: string; roadmap
   );
 
   // A stream artifact for phase-B so deriveStep produces a real step.
-  const cpDir = path.join(root, ".claudopilot");
+  const cpDir = path.join(root, ".claudopilot", ".run");
   await fs.mkdir(cpDir, { recursive: true });
   const streamLines = [
     JSON.stringify({ type: "system", subtype: "init", session_id: "s" }),

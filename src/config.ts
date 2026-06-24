@@ -1,27 +1,199 @@
 /**
  * Typed config loader for the engine.
  *
- * Mirrors `run-loop.sh` resolution order:
+ * Resolution order (lowest precedence first):
  *
- *   defaults  <  claudopilot.config.sh  <  launch env
+ *   defaults  <  project config file  <  launch env
  *
- * The .sh seam stays so the bash driver and the TS driver read the same
- * project config file. The .sh is extracted by running it under bash and
- * dumping the resulting environment as JSON via Node — bulletproof across
- * any shell-safe values (paths with spaces, quoted commands, newlines).
- *
- * A future `claudopilot.config.{ts,json}` seam will plug in here: prefer
- * the typed file when present, fall back to the .sh, then defaults.
+ * The project config file is `.claudopilot/config.json` (the 1.0 layout),
+ * authored in camelCase. For back-compat the loader also reads the pre-1.0
+ * `.claudopilot/config.sh` and root `claudopilot.config.sh` (shell) files —
+ * extracted by running them under bash and dumping the resulting environment
+ * as JSON, bulletproof across any shell-safe value. Whichever file is found
+ * first (json, then sh) is normalised onto a single SHOUTY env-key space so
+ * the precedence logic stays single-track.
  */
 
 import * as path from "node:path";
 import { promises as fs } from "node:fs";
 import { spawnCapture } from "./platform/process.js";
+import { runDir as engineRunDir, logFilePath } from "./platform/paths.js";
 import type { Config } from "./types.js";
 
+// camelCase JSON config keys → the SHOUTY env keys the merge logic speaks.
+const JSON_TO_ENV: Record<string, string> = {
+  roadmapDir: "ROADMAP_DIR",
+  manifest: "MANIFEST",
+  agentDriver: "AGENT_DRIVER",
+  agentModel: "AGENT_MODEL",
+  promptFile: "PROMPT_FILE",
+  supervisorPromptFile: "SUPERVISOR_PROMPT_FILE",
+  workerProjectPrompt: "WORKER_PROJECT_PROMPT",
+  supervisorProjectPrompt: "SUPERVISOR_PROJECT_PROMPT",
+  isolated: "CLAUDOPILOT_ISOLATED",
+  workerImage: "WORKER_IMAGE",
+  maxParallel: "MAX_PARALLEL",
+  pollSeconds: "POLL_SECONDS",
+  maxIter: "MAX_ITER",
+  maxSupervisorAttemptsPerPhase: "MAX_SUPERVISOR_ATTEMPTS_PER_PHASE",
+  keepGoing: "KEEP_GOING",
+  gateCmd: "GATE_CMD",
+  worktreePrepareCmd: "WORKTREE_PREPARE_CMD",
+  bootstrapCmd: "BOOTSTRAP_CMD",
+  buildCmd: "BUILD_CMD",
+  usageWindowSeconds: "USAGE_WINDOW_SECONDS",
+  maxTicksPerWindow: "MAX_TICKS_PER_WINDOW",
+  usageThresholdPct: "USAGE_THRESHOLD_PCT",
+  defaultRateLimitSleep: "DEFAULT_RATE_LIMIT_SLEEP",
+  ignoreLoopCheckpoints: "IGNORE_LOOP_CHECKPOINTS",
+  retryTransientApi: "RETRY_TRANSIENT_API",
+  transientApiMaxRetries: "TRANSIENT_API_MAX_RETRIES",
+  stuckTimeout: "STUCK_TIMEOUT",
+  logFile: "LOG_FILE",
+};
+const KNOWN_ENV = new Set(Object.values(JSON_TO_ENV));
+
+/** Inverse of {@link JSON_TO_ENV}: SHOUTY env key → camelCase config key. */
+export const ENV_TO_JSON: Record<string, string> = Object.fromEntries(
+  Object.entries(JSON_TO_ENV).map(([json, env]) => [env, json]),
+);
+
+/** Config env keys whose values are booleans ("0"/"1" in shell). */
+export const BOOL_ENV_KEYS = new Set([
+  "CLAUDOPILOT_ISOLATED",
+  "KEEP_GOING",
+  "IGNORE_LOOP_CHECKPOINTS",
+  "RETRY_TRANSIENT_API",
+]);
+
+/** Config env keys whose values are integers. */
+export const INT_ENV_KEYS = new Set([
+  "MAX_PARALLEL",
+  "POLL_SECONDS",
+  "MAX_ITER",
+  "MAX_SUPERVISOR_ATTEMPTS_PER_PHASE",
+  "USAGE_WINDOW_SECONDS",
+  "MAX_TICKS_PER_WINDOW",
+  "USAGE_THRESHOLD_PCT",
+  "DEFAULT_RATE_LIMIT_SLEEP",
+  "TRANSIENT_API_MAX_RETRIES",
+  "STUCK_TIMEOUT",
+]);
+
+/**
+ * Convert a SHOUTY env map (as produced by {@link extractShellConfig}) into the
+ * camelCase JSON config object — the `claudopilot migrate` conversion. Only
+ * recognised keys are carried over; values are coerced to boolean/number per
+ * {@link BOOL_ENV_KEYS} / {@link INT_ENV_KEYS}, everything else stays a string.
+ */
+export function shellEnvToJsonConfig(
+  env: Record<string, string>,
+): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const [envKey, raw] of Object.entries(env)) {
+    const jsonKey = ENV_TO_JSON[envKey];
+    if (!jsonKey) continue;
+    if (BOOL_ENV_KEYS.has(envKey)) out[jsonKey] = raw === "1";
+    else if (INT_ENV_KEYS.has(envKey)) {
+      const n = Number.parseInt(raw, 10);
+      if (Number.isFinite(n)) out[jsonKey] = n;
+    } else out[jsonKey] = raw;
+  }
+  return out;
+}
+
+interface ResolvedConfigFile {
+  path: string;
+  format: "json" | "sh";
+}
+
 export interface LoadConfigOptions {
-  /** Path to claudopilot.config.sh. Default `<repoRoot>/claudopilot.config.sh`. */
+  /**
+   * Explicit path to a config file. Format is inferred from the extension
+   * (`.json` → JSON, else shell). Default: discover `.claudopilot/config.json`,
+   * then the pre-1.0 `.claudopilot/config.sh` / `claudopilot.config.sh`.
+   */
   configPath?: string;
+}
+
+async function isFile(p: string): Promise<boolean> {
+  try {
+    return (await fs.stat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Discover the project config file. An explicit path (option or
+ * `CLAUDOPILOT_CONFIG`) wins; otherwise prefer the 1.0 `.claudopilot/config.json`,
+ * then fall back to the pre-1.0 shell files.
+ */
+async function resolveConfigFile(
+  repoRoot: string,
+  env: NodeJS.ProcessEnv,
+  opts: LoadConfigOptions,
+): Promise<ResolvedConfigFile | null> {
+  const explicit = opts.configPath ?? env["CLAUDOPILOT_CONFIG"];
+  if (explicit) {
+    return { path: explicit, format: explicit.endsWith(".json") ? "json" : "sh" };
+  }
+  const candidates: ResolvedConfigFile[] = [
+    { path: path.join(repoRoot, ".claudopilot", "config.json"), format: "json" },
+    { path: path.join(repoRoot, ".claudopilot", "config.sh"), format: "sh" },
+    { path: path.join(repoRoot, "claudopilot.config.sh"), format: "sh" }, // pre-1.0
+  ];
+  for (const c of candidates) {
+    if (await isFile(c.path)) return c;
+  }
+  return null;
+}
+
+/** Parse `.claudopilot/config.json` into the SHOUTY env-key space. */
+async function loadJsonConfig(p: string): Promise<Record<string, string>> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(p, "utf8");
+  } catch {
+    return {};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    // Accept camelCase (canonical) or a raw SHOUTY env key (lenient).
+    const envKey = JSON_TO_ENV[k] ?? (KNOWN_ENV.has(k) ? k : undefined);
+    if (!envKey) continue;
+    if (typeof v === "boolean") out[envKey] = v ? "1" : "0";
+    else if (typeof v === "number") out[envKey] = String(v);
+    else if (typeof v === "string") out[envKey] = v;
+  }
+  return out;
+}
+
+/** First of `rels` (relative to repoRoot) that exists on disk, or null. */
+async function firstExistingRel(
+  repoRoot: string,
+  rels: string[],
+): Promise<string | null> {
+  for (const rel of rels) {
+    if (await pathExists(path.join(repoRoot, rel))) return rel;
+  }
+  return null;
 }
 
 /**
@@ -34,12 +206,15 @@ export async function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
   opts: LoadConfigOptions = {},
 ): Promise<Config> {
+  const resolved = await resolveConfigFile(repoRoot, env, opts);
   const configPath =
-    opts.configPath ??
-    env["CLAUDOPILOT_CONFIG"] ??
-    path.join(repoRoot, "claudopilot.config.sh");
+    resolved?.path ?? path.join(repoRoot, ".claudopilot", "config.json");
 
-  const fileEnv = await extractShellConfig(configPath);
+  const fileEnv = resolved
+    ? resolved.format === "json"
+      ? await loadJsonConfig(resolved.path)
+      : await extractShellConfig(resolved.path)
+    : {};
 
   // Merge order: defaults < file < launch env. `pick` consults file first,
   // then env, then falls back to the default.
@@ -70,8 +245,25 @@ export async function loadConfig(
     return raw === "1";
   };
 
-  const roadmapDir = pick("ROADMAP_DIR", "roadmap");
-  const runDir = path.join(repoRoot, ".claudopilot");
+  // Default locations follow the 1.0 layout (.claudopilot/…) but fall back to
+  // the pre-1.0 paths when those already exist, so an un-migrated repo keeps
+  // working. An explicit config value (env/file) still overrides either.
+  const defaultRoadmapDir =
+    (await firstExistingRel(repoRoot, [".claudopilot/roadmap", "roadmap"])) ??
+    ".claudopilot/roadmap";
+  const defaultWorkerPrompt =
+    (await firstExistingRel(repoRoot, [
+      ".claudopilot/prompts/worker.md",
+      "claudopilot/prompts/worker.md",
+    ])) ?? ".claudopilot/prompts/worker.md";
+  const defaultSupervisorPrompt =
+    (await firstExistingRel(repoRoot, [
+      ".claudopilot/prompts/supervisor.md",
+      "claudopilot/prompts/supervisor.md",
+    ])) ?? ".claudopilot/prompts/supervisor.md";
+
+  const roadmapDir = pick("ROADMAP_DIR", defaultRoadmapDir);
+  const runDir = engineRunDir(repoRoot);
 
   return {
     repoRoot,
@@ -86,13 +278,10 @@ export async function loadConfig(
     agentDriver: pick("AGENT_DRIVER", "claude"),
     agentModel: pickRaw("AGENT_MODEL", ""),
 
-    promptFile: pick(
-      "PROMPT_FILE",
-      path.join(repoRoot, "claudopilot", "prompts", "worker.md"),
-    ),
+    promptFile: pick("PROMPT_FILE", path.join(repoRoot, defaultWorkerPrompt)),
     supervisorPromptFile: pick(
       "SUPERVISOR_PROMPT_FILE",
-      path.join(repoRoot, "claudopilot", "prompts", "supervisor.md"),
+      path.join(repoRoot, defaultSupervisorPrompt),
     ),
     workerProjectPrompt: pickRaw("WORKER_PROJECT_PROMPT", ""),
     supervisorProjectPrompt: pickRaw("SUPERVISOR_PROJECT_PROMPT", ""),
@@ -128,7 +317,7 @@ export async function loadConfig(
     runDir,
     worktreesDir: path.join(runDir, "worktrees"),
     controlDir: path.join(runDir, "control"),
-    logFile: pick("LOG_FILE", path.join(repoRoot, ".claudopilot.log")),
+    logFile: pick("LOG_FILE", logFilePath(repoRoot)),
   };
 }
 

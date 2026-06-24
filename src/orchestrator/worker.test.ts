@@ -46,10 +46,10 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     retryTransientApi: true,
     transientApiMaxRetries: 10,
     stuckTimeout: 0,
-    runDir: "/repo/.claudopilot",
-    worktreesDir: "/repo/.claudopilot/worktrees",
-    controlDir: "/repo/.claudopilot/control",
-    logFile: "/repo/.claudopilot.log",
+    runDir: "/repo/.claudopilot/.run",
+    worktreesDir: "/repo/.claudopilot/.run/worktrees",
+    controlDir: "/repo/.claudopilot/.run/control",
+    logFile: "/repo/.claudopilot/.run/claudopilot.log",
     ...overrides,
   };
 }
@@ -165,11 +165,11 @@ describe("setCapturePaths", () => {
     expect(p.transcript).toBe(path.join(cfg.runDir, "phase-04.transcript.md"));
   });
 
-  it("uses the worktree's .claudopilot dir in isolated mode", () => {
+  it("uses the worktree's run-state dir in isolated mode", () => {
     const cfg = baseConfig({ isolated: true });
     const wt = path.join("/clones", "phase-04");
     const p = setCapturePaths("phase-04", cfg, wt);
-    expect(p.log).toBe(path.join(wt, ".claudopilot", "phase-04.log"));
+    expect(p.log).toBe(path.join(wt, ".claudopilot", ".run", "phase-04.log"));
   });
 });
 
@@ -284,7 +284,7 @@ describe("launch — isolated mode", () => {
     expect(r.env["GATE_CMD"]).toBe("pnpm test");
     expect(r.env["AGENT_DRIVER"]).toBe("claude");
 
-    const written = await readFile(path.join(wt, ".claudopilot", "phase-z.prompt.txt"), "utf8");
+    const written = await readFile(path.join(wt, ".claudopilot", ".run", "phase-z.prompt.txt"), "utf8");
     expect(written).toContain("WORKER PROMPT BODY");
     expect(written).toContain("phase to execute is: phase-z");
   });

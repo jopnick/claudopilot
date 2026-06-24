@@ -9,14 +9,14 @@ never leave the repo in a partially-applied state.
 branch `auto/<phase-id>` (the driver created it).** You build, gate, and
 signal done. **You do NOT merge, and you do NOT edit the manifest** — the
 driver owns those (it runs many phases in parallel and is the sole writer
-of the base branch and `roadmap/EXECUTION-MANIFEST.md`). Trying to merge or
+of the base branch and `.claudopilot/roadmap/EXECUTION-MANIFEST.md`). Trying to merge or
 edit the manifest will race other workers.
 
 ## Contract
 
-1. **Re-orient.** Read `roadmap/EXECUTION-MANIFEST.md` and confirm the phase
+1. **Re-orient.** Read `.claudopilot/roadmap/EXECUTION-MANIFEST.md` and confirm the phase
    id you were spawned for (passed at the end of this prompt). Read the
-   phase doc `roadmap/<phase-id>-*.md`. If it's already `roadmap/DONE_<phase-id>*`,
+   phase doc `.claudopilot/roadmap/<phase-id>-*.md`. If it's already `.claudopilot/roadmap/DONE_<phase-id>*`,
    exit `0` immediately.
 
 2. **Dependency check (backstop).** The driver only launches you once your
@@ -61,7 +61,7 @@ edit the manifest will race other workers.
    phase doc's `## Done criteria` are satisfied:
 
    ```
-   git mv roadmap/<phase-id>-<slug>.md roadmap/DONE_<phase-id>-<slug>.md
+   git mv .claudopilot/roadmap/<phase-id>-<slug>.md .claudopilot/roadmap/DONE_<phase-id>-<slug>.md
    ```
 
    Commit: `docs(phase-<id>): mark phase doc DONE_`. **This rename is the
@@ -83,7 +83,7 @@ edit the manifest will race other workers.
 - **One slice = one commit.** The granularity is the human's go-back lever.
 - **No edits to project-wide convention docs** (`CLAUDE.md`, `AGENTS.md`,
   `CONTRIBUTING.md`, repo READMEs) unless the phase doc explicitly requires it.
-- **Never merge or edit `roadmap/EXECUTION-MANIFEST.md`** — driver-owned.
+- **Never merge or edit `.claudopilot/roadmap/EXECUTION-MANIFEST.md`** — driver-owned.
 - **Status checklist is the source of truth for "what's left."** Keep it in
   sync with the git log on every commit.
 - **Stay inside your packages.** Your phase doc lists the package(s) you own;

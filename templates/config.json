@@ -1,0 +1,11 @@
+{
+  "gateCmd": "true",
+  "bootstrapCmd": "",
+  "buildCmd": "",
+  "worktreePrepareCmd": "",
+  "maxParallel": 3,
+  "keepGoing": false,
+  "retryTransientApi": true,
+  "transientApiMaxRetries": 10,
+  "stuckTimeout": 0
+}
