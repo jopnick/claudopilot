@@ -3,21 +3,15 @@
   "version": "0.4.0",
   "description": "Autonomous parallel execution loop for Claude Code — feed it a dependency-annotated roadmap and it builds every eligible phase concurrently, each in its own git worktree, merging green work and parking red.",
   "type": "module",
+  "packageManager": "pnpm@10.34.4",
   "bin": {
-    "claudopilot": "bin/claudopilot.mjs"
+    "claudopilot": "dist/cli.js"
   },
   "files": [
-    "bin/",
-    "run-loop.sh",
-    "run-in-docker.sh",
-    "worker-entry.sh",
-    "render-stream.mjs",
-    "render-stream-opencode.mjs",
-    "progress.mjs",
-    "progress.sh",
-    "web-server.mjs",
+    "dist/",
     "web/",
     "Dockerfile",
+    ".dockerignore",
     "prompts/worker.md",
     "prompts/supervisor.md",
     "templates/",
@@ -29,7 +23,19 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node bin/claudopilot.mjs --version"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
   },
   "keywords": [
     "claude",

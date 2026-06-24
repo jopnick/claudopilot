@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
 #
 # claudopilot.config.sh — project-owned configuration for claudopilot building
-# *itself* (the dashboard SSE migration roadmap under roadmap/).
+# *itself* (self-host).
 #
-# run-loop.sh sources it; these values override engine defaults. Env vars passed
+# The engine reads it; these values override engine defaults. Env vars passed
 # at launch override this file in turn.
 
 # ── Quality gate ────────────────────────────────────────────────────────────
-# This repo has no compiler/linter pipeline — the artifacts are plain ES modules.
-# The gate syntax-checks the JS the roadmap touches and runs the node:test suite
-# (phase-01 and phase-05 add the tests; `node --test` exits 0 when none match).
-# node --test is scoped to web/*.test.mjs (not a tree walk) so it never recurses
-# through the self-referential `claudopilot -> .` symlink; it no-ops until the
-# first test file exists.
-export GATE_CMD='node --check web-server.mjs && node --check progress.mjs && { ls web/*.test.mjs >/dev/null 2>&1 && node --test web/*.test.mjs || echo "(no tests yet)"; }'
+# The TypeScript engine's gate: typecheck + tests. `--passWithNoTests` keeps it
+# green before the first test file exists (phase-01 defines these pnpm scripts;
+# lint runs in CI, not the per-slice gate, so early slices aren't blocked by it).
+# The leading `pnpm -s typecheck` fails loudly only once a tsconfig exists.
+export GATE_CMD='pnpm -s typecheck && pnpm -s test'
+
+# Install deps inside each fresh per-phase clone so typecheck/tests can run.
+export WORKTREE_PREPARE_CMD='pnpm install --prefer-offline'
 
 # ── Roadmap location ────────────────────────────────────────────────────────
 export ROADMAP_DIR="roadmap"
 export MANIFEST="$REPO_ROOT/roadmap/EXECUTION-MANIFEST.md"
 
 # ── Scheduling ──────────────────────────────────────────────────────────────
-# Serial execution — one phase at a time (phase-02 then phase-03, etc.).
-export MAX_PARALLEL=1
+# Up to 3 phases at once: phase-02/03 fan out after contracts, then
+# phase-04/05/06 can run three-at-a-time.
+export MAX_PARALLEL=3

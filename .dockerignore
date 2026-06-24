@@ -1,0 +1,23 @@
+# Build context for the worker image is the package root. Only dist/ (the
+# bundled CLI) is COPY'd in, so keep the context small and reproducible.
+node_modules/
+.git/
+build-logs/
+.claudopilot/
+.claudopilot.log
+*.log
+*.tgz
+*.map
+src/
+tests/
+roadmap/
+pilot/
+web/
+templates/
+prompts/
+*.md
+.github/
+.eslintrc.cjs
+tsconfig.json
+tsup.config.ts
+vitest.config.ts

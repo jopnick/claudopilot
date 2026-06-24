@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ts-rewrite-resume, run/ts-engine-port, main, master]
+  pull_request:
+  workflow_dispatch:
+
+# Cross-platform CI gate.
+#
+#   `unit` matrix runs install/typecheck/lint/build/test on Linux, macOS,
+#   and Windows. The engine is pure Node, so it runs natively on all three.
+#   The TS-engine e2e (which uses a bash `claude` test stub) self-skips on
+#   Windows via `describe.skipIf`.
+#
+#   `docker-e2e` runs a one-phase fixture through `claudopilot run` on Ubuntu
+#   against a derived image whose `claude` is a stub. CLAUDOPILOT_SKIP_BUILD=1
+#   keeps the engine from overwriting our stub-bearing image.
+
+jobs:
+  unit:
+    name: unit + parity (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4   # version comes from package.json "packageManager"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -s typecheck
+      - run: pnpm -s lint
+      - run: pnpm -s build
+      - run: pnpm -s test
+
+  docker-e2e:
+    name: docker e2e (host orchestrator + worker container)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4   # version comes from package.json "packageManager"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -s build
+
+      - name: Docker e2e smoke
+        run: bash .github/workflows/docker-e2e.sh

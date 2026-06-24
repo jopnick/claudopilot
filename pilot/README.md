@@ -47,10 +47,10 @@ run both against the same manifest at once.
 | | Native plugin (this) | Bash/Docker engine |
 | --- | --- | --- |
 | Runs in | an interactive Claude Code session | a container / host shell, unattended |
-| Worker isolation | git worktree per phase | git worktree, or a disposable container per phase (`--isolated`) |
+| Worker isolation | git worktree per phase | a disposable container per phase |
 | Setup | `/plugin install`, nothing else | Node, Docker, `claudopilot init` |
-| Progress UI | the session's background-task view + `/workflows` | `claudopilot web` dashboard + `progress.sh` |
-| Rate limits | handled by the harness | proactive window + reactive backoff in `run-loop.sh` |
+| Progress UI | the session's background-task view + `/workflows` | `claudopilot web` dashboard + `claudopilot progress` |
+| Rate limits | handled by the harness | proactive window + reactive backoff in the engine |
 | Local / $0 models | — (uses your Claude Code session) | yes, via `AGENT_DRIVER=opencode` + Ollama |
 | Best for | day-to-day, hands-on runs | CI, fully-unattended runs, hard container isolation |
 
