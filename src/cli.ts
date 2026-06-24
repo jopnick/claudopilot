@@ -22,6 +22,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -831,14 +832,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 }
 
-// Detect "invoked directly" — handles both `node dist/cli.js` and a shebang exec.
-const invokedDirectly = ((): boolean => {
-  const entry = process.argv[1];
+/**
+ * Whether this module is the program entry point.
+ *
+ * Handles `node dist/cli.js`, a shebang exec, and — critically — symlinked
+ * installs. Under pnpm's symlinked `node_modules` (and global installs, whose
+ * bin is a symlink), `process.argv[1]` is the symlink path while
+ * `import.meta.url` resolves to the real file, so a raw string compare misses
+ * and `main()` never runs — the CLI exits 0 with no output. Falling back to a
+ * realpath compare makes both sides canonical so the guard matches.
+ *
+ * Exported for unit testing; the resolution is `(entry, moduleUrl)`-pure.
+ */
+export function isMainEntry(entry: string | undefined, moduleUrl: string): boolean {
   if (!entry) return false;
-  const here = fileURLToPath(import.meta.url);
-  return entry === here;
-})();
-if (invokedDirectly) {
+  const here = fileURLToPath(moduleUrl);
+  if (entry === here) return true;
+  try {
+    return realpathSync(entry) === realpathSync(here);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainEntry(process.argv[1], import.meta.url)) {
   main().then(
     (code) => process.exit(code),
     (err: unknown) => {
