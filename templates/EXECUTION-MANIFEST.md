@@ -12,7 +12,7 @@
 
 ## Execution rules (read-only contract for the agent)
 
-The real contract lives in `claudopilot/prompts/worker.md` (+ your
+The real contract lives in `.claudopilot/prompts/worker.md` (+ your
 `worker.project.md` overlay). This section is for human readers re-orienting.
 
 - A phase is eligible when its state is `[pending]` and every phase in its

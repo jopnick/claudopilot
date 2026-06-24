@@ -50,12 +50,12 @@ describe("parseEnv", () => {
 // ── capturePaths ──────────────────────────────────────────────────────
 
 describe("capturePaths", () => {
-  it("matches the bash layout under <workdir>/.claudopilot/", () => {
+  it("matches the layout under <workdir>/.claudopilot/.run/", () => {
     expect(capturePaths("/work", "phase-04")).toEqual({
-      log: "/work/.claudopilot/phase-04.log",
-      stream: "/work/.claudopilot/phase-04.stream.jsonl",
-      transcript: "/work/.claudopilot/phase-04.transcript.md",
-      prompt: "/work/.claudopilot/phase-04.prompt.txt",
+      log: "/work/.claudopilot/.run/phase-04.log",
+      stream: "/work/.claudopilot/.run/phase-04.stream.jsonl",
+      transcript: "/work/.claudopilot/.run/phase-04.transcript.md",
+      prompt: "/work/.claudopilot/.run/phase-04.prompt.txt",
     });
   });
 });
@@ -144,7 +144,7 @@ describe("workerEntry — fresh", () => {
   it("appends transcript header, runs prepare cmd, then calls runFresh with the prompt", async () => {
     const f = fakeFs();
     f.dirs.add("/work");
-    f.files.set("/work/.claudopilot/phase-04.prompt.txt", "do the thing");
+    f.files.set("/work/.claudopilot/.run/phase-04.prompt.txt", "do the thing");
     const runner = recordingRunner();
     const prepare = recordingPrepare();
 
@@ -163,7 +163,7 @@ describe("workerEntry — fresh", () => {
       {
         cmd: "pnpm install",
         cwd: "/work",
-        logPath: "/work/.claudopilot/phase-04.log",
+        logPath: "/work/.claudopilot/.run/phase-04.log",
       },
     ]);
     expect(runner.freshCalls.length).toBe(1);
@@ -173,16 +173,16 @@ describe("workerEntry — fresh", () => {
     expect(runner.resumeCalls).toEqual([]);
     expect(
       f.appends.some((a) =>
-        a.startsWith("/work/.claudopilot/phase-04.transcript.md::"),
+        a.startsWith("/work/.claudopilot/.run/phase-04.transcript.md::"),
       ),
     ).toBe(true);
-    expect(f.dirs.has("/work/.claudopilot")).toBe(true);
+    expect(f.dirs.has("/work/.claudopilot/.run")).toBe(true);
   });
 
   it("skips the prepare step when no cmd is set", async () => {
     const f = fakeFs();
     f.dirs.add("/work");
-    f.files.set("/work/.claudopilot/phase-04.prompt.txt", "go");
+    f.files.set("/work/.claudopilot/.run/phase-04.prompt.txt", "go");
     const runner = recordingRunner();
     const prepare = recordingPrepare();
     await workerEntry(
@@ -257,7 +257,7 @@ describe("workerEntry — resume", () => {
     );
     expect(
       f.appends.some((a) =>
-        a.startsWith("/work/.claudopilot/phase-04.log::") &&
+        a.startsWith("/work/.claudopilot/.run/phase-04.log::") &&
         a.includes("resuming session S"),
       ),
     ).toBe(true);
@@ -268,7 +268,7 @@ describe("workerEntry — propagates the runner exit code", () => {
   it("non-zero from runFresh is returned", async () => {
     const f = fakeFs();
     f.dirs.add("/work");
-    f.files.set("/work/.claudopilot/phase-04.prompt.txt", "go");
+    f.files.set("/work/.claudopilot/.run/phase-04.prompt.txt", "go");
     const runner = recordingRunner();
     runner.exit = 42;
     const res = await workerEntry(

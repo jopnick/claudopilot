@@ -11,8 +11,8 @@
 
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
-import * as path from "node:path";
 import { buildSnapshot } from "./model.js";
+import { cloneCapturePath, mainCapturePath } from "../platform/paths.js";
 import type { ProgressSnapshot, ProgressStep } from "../types.js";
 
 export interface RenderOptions {
@@ -226,19 +226,8 @@ export interface RunFollowOptions extends RenderOptions {
 export function runFollow(opts: RunFollowOptions): ReturnType<typeof spawn> {
   const C = palette(opts);
   const out = opts.out ?? process.stdout;
-  const clone = path.join(
-    opts.repoRoot,
-    ".claudopilot",
-    "worktrees",
-    opts.id,
-    ".claudopilot",
-    `${opts.id}.transcript.md`,
-  );
-  const main = path.join(
-    opts.repoRoot,
-    ".claudopilot",
-    `${opts.id}.transcript.md`,
-  );
+  const clone = cloneCapturePath(opts.repoRoot, opts.id, `${opts.id}.transcript.md`);
+  const main = mainCapturePath(opts.repoRoot, opts.id, `${opts.id}.transcript.md`);
   const tpath = existsSync(clone) ? clone : main;
   out.write(`${C.dim}following ${tpath} (Ctrl-C to stop)${C.r}\n`);
   return spawn("tail", ["-n", "+1", "-F", tpath], {

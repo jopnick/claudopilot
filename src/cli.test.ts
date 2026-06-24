@@ -92,42 +92,55 @@ describe("cli init", () => {
   it("fresh init writes core files and a skeleton manifest, no examples", async () => {
     const { result } = await captureStdio(() => main(["init"]));
     expect(result).toBe(0);
-    expect(await exists("claudopilot.config.sh")).toBe(true);
-    expect(await exists("claudopilot/prompts/worker.project.md")).toBe(true);
-    expect(await exists("roadmap/EXECUTION-MANIFEST.md")).toBe(true);
+    expect(await exists(".claudopilot/config.json")).toBe(true);
+    expect(await exists(".claudopilot/prompts/worker.md")).toBe(true);
+    expect(await exists(".claudopilot/prompts/worker.project.md")).toBe(true);
+    expect(await exists(".claudopilot/roadmap/EXECUTION-MANIFEST.md")).toBe(true);
     // No example phase doc by default.
-    expect(await exists("roadmap/phase-01-example.md")).toBe(false);
+    expect(await exists(".claudopilot/roadmap/phase-01-example.md")).toBe(false);
     // Skeleton manifest has an empty Order (no sample phase lines).
-    expect(read("roadmap/EXECUTION-MANIFEST.md")).not.toContain("**phase-01**");
+    expect(read(".claudopilot/roadmap/EXECUTION-MANIFEST.md")).not.toContain("**phase-01**");
+    // config.json is valid JSON.
+    expect(() => JSON.parse(read(".claudopilot/config.json"))).not.toThrow();
+    // .gitignore excludes the run-state dir.
+    expect(read(".gitignore")).toContain(".claudopilot/.run/");
   });
 
   it("--with-examples adds the sample roadmap", async () => {
     const { result } = await captureStdio(() => main(["init", "--with-examples"]));
     expect(result).toBe(0);
-    expect(await exists("roadmap/phase-01-example.md")).toBe(true);
-    expect(read("roadmap/EXECUTION-MANIFEST.md")).toContain("**phase-01**");
+    expect(await exists(".claudopilot/roadmap/phase-01-example.md")).toBe(true);
+    expect(read(".claudopilot/roadmap/EXECUTION-MANIFEST.md")).toContain("**phase-01**");
   });
 
   it("never overwrites existing project files (even with --force)", async () => {
-    await fs.mkdir(path.join(tmp, "claudopilot", "prompts"), { recursive: true });
-    await fs.writeFile(path.join(tmp, "claudopilot.config.sh"), "# MINE\n");
+    await fs.mkdir(path.join(tmp, ".claudopilot", "prompts"), { recursive: true });
+    await fs.writeFile(path.join(tmp, ".claudopilot", "config.json"), "# MINE\n");
     await fs.writeFile(
-      path.join(tmp, "claudopilot", "prompts", "worker.project.md"),
+      path.join(tmp, ".claudopilot", "prompts", "worker.project.md"),
       "# MINE\n",
     );
     const { result } = await captureStdio(() => main(["init", "--force"]));
     expect(result).toBe(0);
-    expect(read("claudopilot.config.sh")).toBe("# MINE\n");
-    expect(read("claudopilot/prompts/worker.project.md")).toBe("# MINE\n");
+    expect(read(".claudopilot/config.json")).toBe("# MINE\n");
+    expect(read(".claudopilot/prompts/worker.project.md")).toBe("# MINE\n");
   });
 
   it("skips examples when the roadmap already has content", async () => {
-    await fs.mkdir(path.join(tmp, "roadmap"), { recursive: true });
-    await fs.writeFile(path.join(tmp, "roadmap", "phase-99-mine.md"), "# mine\n");
+    await fs.mkdir(path.join(tmp, ".claudopilot", "roadmap"), { recursive: true });
+    await fs.writeFile(path.join(tmp, ".claudopilot", "roadmap", "phase-99-mine.md"), "# mine\n");
     const { result, io } = await captureStdio(() => main(["init", "--with-examples"]));
     expect(result).toBe(0);
-    expect(await exists("roadmap/phase-01-example.md")).toBe(false);
+    expect(await exists(".claudopilot/roadmap/phase-01-example.md")).toBe(false);
     expect(io.stdout).toContain("skipping examples");
+  });
+
+  it("is idempotent on .gitignore (no duplicate run-state entry)", async () => {
+    await captureStdio(() => main(["init"]));
+    await captureStdio(() => main(["init"]));
+    const ignore = read(".gitignore");
+    const count = ignore.split("\n").filter((l) => l.trim() === ".claudopilot/.run/").length;
+    expect(count).toBe(1);
   });
 });
 

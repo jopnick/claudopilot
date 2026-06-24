@@ -40,20 +40,20 @@ loop driver.
 ## Get started in 60 seconds
 
 ```bash
-npm install -g claudopilot           # or run any command via: npx claudopilot <command>
+npm install -g claudopilot           # global; or: npm install -D claudopilot + npx claudopilot <command>
 
 cd your-repo
 git checkout -b autonomous-runner    # the loop refuses to land work on main/trunk
 
 claudopilot init --with-examples     # scaffold config + a runnable sample roadmap
-#   edit claudopilot.config.sh   → set GATE_CMD (your test/lint command)
-#   edit roadmap/                → describe your phases (or keep the sample to try it)
+#   edit .claudopilot/config.json    → set gateCmd (your test/lint command)
+#   edit .claudopilot/roadmap/       → describe your phases (or keep the sample to try it)
 
 claudopilot run                      # build the worker image + run the loop
 claudopilot web                      # optional: live dashboard at http://127.0.0.1:4317
 ```
 
-First time? `claudopilot init --with-examples` writes a sample `roadmap/` you can
+First time? `claudopilot init --with-examples` writes a sample `.claudopilot/roadmap/` you can
 run as-is to watch the loop work end-to-end, then adapt. `init` never overwrites
 files you've already edited, so it's safe to re-run. The rest of this README
 explains each piece in depth.
@@ -66,7 +66,7 @@ The driver schedules by **dependency graph**, not by queue position. Each pass i
    into the base branch (serially — the driver is single-threaded for merges, so
    package-disjoint phases never race) and flips that manifest entry to `[merged]`;
 2. launches every `[pending]` phase whose `(deps: …)` are all `[merged]`, up to
-   `MAX_PARALLEL`, each in a fresh `git worktree` under `.claudopilot/worktrees/`
+   `MAX_PARALLEL`, each in a fresh `git worktree` under `.claudopilot/.run/worktrees/`
    (prepared with `pnpm install` so the isolated checkout can build);
 3. exits 0 when all phases are `[merged]`.
 
@@ -99,7 +99,7 @@ Key knobs (full list under [Configuration](#configuration-environment-variables)
 `worker.md` and the pre-commit hook), `WORKTREE_PREPARE_CMD`, `POLL_SECONDS`.
 
 > Generate a compatible roadmap with the repo's `/plan-build` skill — it emits
-> `roadmap/EXECUTION-MANIFEST.md` (with `(deps: …)`) + per-phase docs whose
+> `.claudopilot/roadmap/EXECUTION-MANIFEST.md` (with `(deps: …)`) + per-phase docs whose
 > package-disjoint streams map straight onto this scheduler.
 
 ## Contents
@@ -132,28 +132,61 @@ claudopilot/
 
 ## Install
 
+Claudopilot installs either **globally** or as a **local dev dependency** — both
+modes are fully supported.
+
 ```bash
-npm install -g claudopilot      # or: npx claudopilot <command>
+npm install -g claudopilot      # global: run as `claudopilot <command>`
+# — or —
+npm install -D claudopilot      # local dev dep (pnpm/yarn work too):
+                                # run as `npx claudopilot <command>` or a package.json script
 ```
 
-Then, from the root of the repo you want to drive:
+Then, from the root of the repo you want to drive (prefix each command with
+`npx` if you installed locally):
 
 ```bash
-claudopilot init                # vendors the engine into ./claudopilot/ and
-                                # scaffolds claudopilot.config.sh + a skeleton roadmap/
+claudopilot init                # scaffolds .claudopilot/config.json,
+                                # .claudopilot/prompts/, and a skeleton
+                                # .claudopilot/roadmap/EXECUTION-MANIFEST.md
 claudopilot init --with-examples  # …same, plus a runnable sample roadmap
-# …edit claudopilot.config.sh (GATE_CMD), the roadmap, and the prompt overlay…
+# …edit .claudopilot/config.json (gateCmd), the roadmap, and the prompt overlay…
 claudopilot run                 # build the image + run the loop (--isolated for
                                 # per-phase containers; --shell to drop into bash)
 claudopilot progress            # read-only view of an in-flight run
 claudopilot web                 # browser dashboard at http://127.0.0.1:4317
 ```
 
-`init` never overwrites project files you own (`claudopilot.config.sh`, the
+`init` lays everything down under a single `.claudopilot/` folder: it writes
+`.claudopilot/config.json`, `.claudopilot/prompts/`, and
+`.claudopilot/roadmap/EXECUTION-MANIFEST.md`, and appends `.claudopilot/.run/`
+(ephemeral run-state — worktrees, captures, control files, the driver log) to
+the repo's `.gitignore`. A starter `.claudopilot/config.json`:
+
+```json
+{
+  "gateCmd": "pnpm typecheck && pnpm test",
+  "bootstrapCmd": "",
+  "buildCmd": "",
+  "worktreePrepareCmd": "",
+  "maxParallel": 3,
+  "keepGoing": false,
+  "retryTransientApi": true,
+  "transientApiMaxRetries": 10,
+  "stuckTimeout": 0
+}
+```
+
+`init` never overwrites project files you own (`.claudopilot/config.json`, the
 roadmap, the prompt overlay) — re-running it only fills in what's missing.
-`--with-examples` adds a worked sample roadmap, and is skipped if your `roadmap/`
-already has content. `--force` re-vendors the engine under `./claudopilot/` after
-upgrading the package (it still never touches your project files).
+`--with-examples` adds a worked sample roadmap, and is skipped if your
+`.claudopilot/roadmap/` already has content.
+
+> **Back-compat with the pre-1.0 layout.** Existing repos still work unchanged:
+> if `.claudopilot/config.json` is absent claudopilot falls back to a root
+> `claudopilot.config.sh`; if `.claudopilot/roadmap/` is absent it falls back to
+> `./roadmap/`; and if `.claudopilot/prompts/` is absent it falls back to
+> `./claudopilot/prompts/`.
 
 ### Web dashboard
 
@@ -181,17 +214,17 @@ loopback; in `--isolated` mode it runs on the host. Knobs:
 
 You can also run it standalone any time from the repo root: `claudopilot web`.
 
-`init` writes the engine scripts under `./claudopilot/` (so the Docker layout
-below resolves) and leaves `claudopilot.config.sh`, the roadmap, and
-`claudopilot/prompts/worker.project.md` for you to fill in. The sections below
-describe what those scripts do and the manifest/phase-doc format `init` stubs out.
+`init` scaffolds the project files under `.claudopilot/` and leaves
+`.claudopilot/config.json`, the roadmap, and
+`.claudopilot/prompts/worker.project.md` for you to fill in. The sections below
+describe the manifest/phase-doc format `init` stubs out.
 
 ## Quick start
 
 Prerequisites:
 
-- A repo with `roadmap/EXECUTION-MANIFEST.md` (format below) and per-phase
-  docs alongside it.
+- A repo with `.claudopilot/roadmap/EXECUTION-MANIFEST.md` (format below) and
+  per-phase docs alongside it.
 - Claude authentication, either:
   - **API token (recommended for headless):** export `ANTHROPIC_API_KEY`
     before launching — it is forwarded into the container and the workers
@@ -219,9 +252,9 @@ claudopilot run             # add --isolated for per-phase containers
 Watch progress from another terminal:
 
 ```bash
-tail -f .claudopilot.log
+tail -f .claudopilot/.run/claudopilot.log
 # or
-docker exec -it claudopilot-runner tail -f /work/.claudopilot.log
+docker exec -it claudopilot-runner tail -f /work/.claudopilot/.run/claudopilot.log
 ```
 
 The loop exits `0` when every entry in the manifest is `merged`.
@@ -261,7 +294,7 @@ manifest and the active phase doc. This is intentional: it keeps each
 phase's context window small and forces the worker to commit-often so
 state lives in git, not in a chat history.
 
-### Worker contract (claudopilot/prompts/worker.md)
+### Worker contract (.claudopilot/prompts/worker.md)
 
 The worker is given one phase id per tick. Its contract:
 
@@ -295,12 +328,12 @@ The full text lives in [prompts/worker.md](prompts/worker.md). Edit it
 if your project doesn't use `pnpm`, doesn't use Turborepo, has a
 different gate command, or doesn't use the slice/Status convention.
 
-### Supervisor contract (claudopilot/prompts/supervisor.md)
+### Supervisor contract (.claudopilot/prompts/supervisor.md)
 
 Triggered only when the worker exits 5 (gave up on a slice's tests) or 6
 (silent halt). Hard-bounded mandate:
 
-- Read `.claudopilot.log`, `git status`, `git diff` — diagnose from
+- Read `.claudopilot/.run/claudopilot.log`, `git status`, `git diff` — diagnose from
   evidence, not guessing.
 - Apply the **smallest possible fix** — a type annotation, a missing
   import, a single lint correction. If the fix surface is more than
@@ -322,7 +355,7 @@ Full text in [prompts/supervisor.md](prompts/supervisor.md).
 
 Claudopilot expects two things in your repo:
 
-### 1. The manifest — `roadmap/EXECUTION-MANIFEST.md`
+### 1. The manifest — `.claudopilot/roadmap/EXECUTION-MANIFEST.md`
 
 The single source of truth for what's pending and what's done. Template:
 
@@ -381,7 +414,7 @@ After a phase merges, the worker fills in §Phase details for that entry
 - **Merge SHA:** abc1234
 ```
 
-### 2. Per-phase docs — `roadmap/phase-<id>-<slug>.md`
+### 2. Per-phase docs — `.claudopilot/roadmap/phase-<id>-<slug>.md`
 
 One per entry in the manifest. The worker reads the doc to figure out
 what to build. Recommended sections:
@@ -444,10 +477,10 @@ the doc — the worker greps for it and exits 4 if X isn't merged yet.
 When the phase finishes, the worker renames the doc:
 
 ```
-roadmap/phase-04-user-entity.md → roadmap/DONE_phase-04-user-entity.md
+.claudopilot/roadmap/phase-04-user-entity.md → .claudopilot/roadmap/DONE_phase-04-user-entity.md
 ```
 
-That rename is part of the merge commit. After merge, `ls roadmap/`
+That rename is part of the merge commit. After merge, `ls .claudopilot/roadmap/`
 shows shipped phases at a glance.
 
 ## Authoring phase docs — the process
@@ -640,15 +673,21 @@ That's it. Launch the loop; this phase becomes the next tick's target.
 
 ## Configuration (environment variables)
 
-All overridable in env at launch time.
+All overridable in env at launch time (e.g. `GATE_CMD="…" claudopilot run`). The
+common knobs also live in `.claudopilot/config.json` under camelCase keys —
+`GATE_CMD` → `gateCmd`, `MAX_PARALLEL` → `maxParallel`, `BOOTSTRAP_CMD` →
+`bootstrapCmd`, `BUILD_CMD` → `buildCmd`, `WORKTREE_PREPARE_CMD` →
+`worktreePrepareCmd`, `KEEP_GOING` → `keepGoing`, `RETRY_TRANSIENT_API` →
+`retryTransientApi`, `STUCK_TIMEOUT` → `stuckTimeout`. The SHOUTY names below
+remain valid as launch-time environment variables.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `REPO_ROOT` | `/work` | Where the repo is mounted inside the container. |
-| `MANIFEST` | `$REPO_ROOT/roadmap/EXECUTION-MANIFEST.md` | The manifest path. |
-| `PROMPT_FILE` | `$REPO_ROOT/claudopilot/prompts/worker.md` | Worker prompt source. |
-| `SUPERVISOR_PROMPT_FILE` | `$REPO_ROOT/claudopilot/prompts/supervisor.md` | Supervisor prompt source. |
-| `LOG_FILE` | `$REPO_ROOT/.claudopilot.log` | Activity log (overwritten on loop start; tail -f to watch). |
+| `MANIFEST` | `$REPO_ROOT/.claudopilot/roadmap/EXECUTION-MANIFEST.md` | The manifest path. |
+| `PROMPT_FILE` | `$REPO_ROOT/.claudopilot/prompts/worker.md` | Worker prompt source. |
+| `SUPERVISOR_PROMPT_FILE` | `$REPO_ROOT/.claudopilot/prompts/supervisor.md` | Supervisor prompt source. |
+| `LOG_FILE` | `$REPO_ROOT/.claudopilot/.run/claudopilot.log` | Activity log (overwritten on loop start; tail -f to watch). |
 | `BASE_BRANCH` | current `git branch` | Branch the loop cuts phase branches from and merges back to. Refuses the trunk (`main`/`master`) unless `BASE_BRANCH_EXPLICIT=1`. |
 | `MAX_PARALLEL` | `3` | Max phases running concurrently (each a `claude -p` worker in its own git worktree). Tune to cores and rate-limit headroom. |
 | `GATE_CMD` | `pnpm typecheck && lint && test && check-circular && i18n:check` | Per-phase quality gate; must match `worker.md` and the pre-commit hook. |
@@ -688,7 +727,7 @@ All overridable in env at launch time.
 | `2` | LOOP-CHECKPOINT reached. Edit the manifest to remove the marker and re-launch. |
 | `3` | Manifest malformed — no pending entries and no completion sentinel, or unparseable phase id. |
 | `4` | Agent reported dependency error — phase doc requires an earlier phase that isn't yet merged. |
-| `5` | Worker halted in WIP state — typically test failures it couldn't fix in 5 attempts, supervisor also failed. Inspect `.claudopilot.log` + `git status`. |
+| `5` | Worker halted in WIP state — typically test failures it couldn't fix in 5 attempts, supervisor also failed. Inspect `.claudopilot/.run/claudopilot.log` + `git status`. |
 | `6` | Phase still pending after the agent ran — likely a crash or silent halt. Inspect the manifest + agent stdout. |
 | `7` | Hit `MAX_ITER` without completion. Bump the ceiling or investigate. |
 | `8` | `KEEP_GOING` run finished with one or more phases `[blocked]` (parked branches left for review). Not a crash — flip a `[blocked]` entry back to `[pending]` and re-run to retry. |
@@ -709,14 +748,14 @@ Three layers keep a long unattended run moving without a human babysitting it:
 - **Dashboard controls / control seam.** The dashboard shows a **poke** button on
   a running phase (kill + relaunch a hung worker) and a **retry** button on a
   `[blocked]` phase (re-queue a parked one). These post to `POST /api/control`,
-  which only drops a file in `.claudopilot/control/` — the driver applies it on its
+  which only drops a file in `.claudopilot/.run/control/` — the driver applies it on its
   next pass, so it stays the sole actor on workers and the manifest. The same seam
   works from a script or another container:
 
   ```bash
   # poke a hung running worker, or retry a parked [blocked] phase
-  echo > .claudopilot/control/<phase-id>.poke
-  echo > .claudopilot/control/<phase-id>.retry
+  echo > .claudopilot/.run/control/<phase-id>.poke
+  echo > .claudopilot/.run/control/<phase-id>.retry
   ```
 
 ## Rate-limit handling
@@ -753,7 +792,7 @@ so on Windows run it under WSL2 — the container still runs Linux either way.)
 The engine is **driver-agnostic** — scheduling, worktrees, serial merges, the
 `DONE_` done-signal, and the dashboard don't care which agent CLI runs each
 worker. Two are built in, selected with `AGENT_DRIVER` (set it in
-`claudopilot.config.sh` or the environment; the orchestrator forwards it into
+`.claudopilot/config.json` or the environment; the orchestrator forwards it into
 each worker container):
 
 | `AGENT_DRIVER` | Runs each worker as | Notes |
@@ -807,7 +846,7 @@ Then, from the root of the repo you want to drive:
 /pilot-run --only phase-04 --push         # one initiative from a shared manifest; push after merge
 ```
 
-The main session becomes the driver: it reads `roadmap/EXECUTION-MANIFEST.md`,
+The main session becomes the driver: it reads `.claudopilot/roadmap/EXECUTION-MANIFEST.md`,
 launches each eligible phase as a background **`pilot:phase-worker`** agent in its
 own worktree, merges finished `auto/<id>` branches serially, owns the manifest,
 and sends in a **`pilot:phase-supervisor`** when a gate stays red. If there's no
@@ -1025,12 +1064,12 @@ assumptions. Likely things to edit:
 
 The TypeScript engine ([src/](src/)) is project-agnostic — you should not need
 to edit it for a new project. Your project-specific configuration lives entirely
-in `claudopilot.config.sh`, the roadmap, and the `worker.project.md` overlay.
+in `.claudopilot/config.json`, the roadmap, and the `worker.project.md` overlay.
 
 ## Operational notes
 
 - **Activity log is overwritten on each loop start.** If you need it,
-  copy `.claudopilot.log` before re-launching.
+  copy `.claudopilot/.run/claudopilot.log` before re-launching.
 - **The loop refuses to launch with `BASE_BRANCH` on the trunk (`main`/`master`)**
   unless `BASE_BRANCH_EXPLICIT=1` is also set. This is the single biggest
   guardrail against the agent landing experimental work directly on the

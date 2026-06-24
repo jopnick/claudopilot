@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import * as path from "node:path";
 import { buildSnapshot } from "../progress/model.js";
+import { runDir, cloneCapturePath, mainCapturePath } from "../platform/paths.js";
 import type { ProgressSnapshot } from "../types.js";
 
 // SSE wire vocabulary — must stay byte-identical with `web/events.mjs` (the
@@ -99,15 +100,8 @@ function staticMap(webDir: string): Record<string, string> {
 }
 
 function transcriptPath(repoRoot: string, id: string): string | null {
-  const clone = path.join(
-    repoRoot,
-    ".claudopilot",
-    "worktrees",
-    id,
-    ".claudopilot",
-    `${id}.transcript.md`,
-  );
-  const main = path.join(repoRoot, ".claudopilot", `${id}.transcript.md`);
+  const clone = cloneCapturePath(repoRoot, id, `${id}.transcript.md`);
+  const main = mainCapturePath(repoRoot, id, `${id}.transcript.md`);
   if (existsSync(clone)) return clone;
   if (existsSync(main)) return main;
   return null;
@@ -170,7 +164,7 @@ export function createDashboardServer(opts: StartServerOptions): Server {
         return;
       }
       try {
-        const dir = path.join(opts.repoRoot, ".claudopilot", "control");
+        const dir = path.join(runDir(opts.repoRoot), "control");
         mkdirSync(dir, { recursive: true });
         writeFileSync(path.join(dir, `${id}.${action}`), "");
         sendJson(res, 200, JSON.stringify({ ok: true, id, action }));

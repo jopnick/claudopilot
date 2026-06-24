@@ -15,7 +15,7 @@
  *   --version | --help
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
@@ -59,30 +59,37 @@ function pkg(): PackageJson {
 // the host CLI — nothing executable is vendored. We still vendor the base
 // prompt contract so `config.promptFile` resolves and users can read/tune it;
 // the project overlay (worker.project.md) lands as a core project file.
-const ENGINE_FILES = [
-  "prompts/worker.md",
-  "prompts/supervisor.md",
+// Vendored under the target repo's `.claudopilot/prompts/`. The base prompt
+// contract is tool-managed (safe to re-vendor with --force); the executable
+// engine is baked into the worker image + host CLI, nothing executable here.
+const ENGINE_FILES: Array<[string, string]> = [
+  ["prompts/worker.md", ".claudopilot/prompts/worker.md"],
+  ["prompts/supervisor.md", ".claudopilot/prompts/supervisor.md"],
 ];
 
 // Project files you own and edit. These are NEVER overwritten by `init` (not
 // even with --force, which only re-vendors the engine) — a second `init` on a
 // configured repo is a safe no-op for everything here.
 const CORE_PROJECT_FILES: Array<[string, string]> = [
-  ["templates/claudopilot.config.sh", "claudopilot.config.sh"],
-  ["templates/worker.project.md", "claudopilot/prompts/worker.project.md"],
+  ["templates/config.json", ".claudopilot/config.json"],
+  ["templates/worker.project.md", ".claudopilot/prompts/worker.project.md"],
 ];
 
 // The manifest is core, but its starting content depends on whether examples
 // were requested: a skeleton (empty Order) by default, or a worked sample.
-const MANIFEST_DEST = "roadmap/EXECUTION-MANIFEST.md";
+const MANIFEST_DEST = ".claudopilot/roadmap/EXECUTION-MANIFEST.md";
 const MANIFEST_SKELETON_TPL = "templates/EXECUTION-MANIFEST.md";
 const MANIFEST_EXAMPLE_TPL = "templates/EXECUTION-MANIFEST.example.md";
 
 // Example scaffolding — only laid down with `--with-examples`, and only into a
 // roadmap that has no content of its own yet.
 const EXAMPLE_FILES: Array<[string, string]> = [
-  ["templates/phase-01-example.md", "roadmap/phase-01-example.md"],
+  ["templates/phase-01-example.md", ".claudopilot/roadmap/phase-01-example.md"],
 ];
+
+// Run-state dir (gitignored). `init` makes sure the repo's .gitignore excludes
+// it so worker worktrees never commit transcripts/control files.
+const RUN_STATE_IGNORE = ".claudopilot/.run/";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -130,13 +137,44 @@ function writeProjectFile(src: string, dest: string): boolean {
  * the sample roadmap: a partially-set-up repo keeps what it has.
  */
 function roadmapHasContent(cwd: string): boolean {
-  const dir = join(cwd, "roadmap");
-  if (!existsSync(dir)) return false;
-  try {
-    return readdirSync(dir).some((f) => f.endsWith(".md"));
-  } catch {
-    return false;
+  // Honour the pre-1.0 ./roadmap layout too, so a partially-migrated repo
+  // still counts as "already has a roadmap".
+  for (const rel of [".claudopilot/roadmap", "roadmap"]) {
+    const dir = join(cwd, rel);
+    if (!existsSync(dir)) continue;
+    try {
+      if (readdirSync(dir).some((f) => f.endsWith(".md"))) return true;
+    } catch {
+      /* unreadable — treat as empty */
+    }
   }
+  return false;
+}
+
+/**
+ * Make sure the repo's `.gitignore` excludes the run-state dir, so worker
+ * worktrees (cut from the base branch) never commit transcripts/control files.
+ * Appends the entry if absent; creates `.gitignore` if missing. Idempotent.
+ */
+function ensureGitignore(cwd: string): void {
+  const gitignore = join(cwd, ".gitignore");
+  let body = "";
+  try {
+    body = readFileSync(gitignore, "utf8");
+  } catch {
+    /* no .gitignore yet — we'll create one */
+  }
+  const lines = body.split(/\r?\n/).map((l) => l.trim());
+  if (lines.includes(RUN_STATE_IGNORE) || lines.includes(".claudopilot/.run")) {
+    writeOut(`  ok     .gitignore already excludes ${RUN_STATE_IGNORE}`);
+    return;
+  }
+  const sep = body === "" || body.endsWith("\n") ? "" : "\n";
+  writeFileSync(
+    gitignore,
+    `${body}${sep}\n# claudopilot run-state (worktrees, captures, control, log)\n${RUN_STATE_IGNORE}\n`,
+  );
+  writeOut(`  write  .gitignore (added ${RUN_STATE_IGNORE})`);
 }
 
 interface FlagSpec {
@@ -189,12 +227,12 @@ function cmdInit(args: readonly string[]): number {
   const cwd = process.cwd();
   writeOut(`Scaffolding claudopilot into ${cwd}`);
 
-  // Prompt contract: tool-managed, vendored under ./claudopilot/prompts/. Safe
+  // Prompt contract: tool-managed, vendored under .claudopilot/prompts/. Safe
   // to re-vendor with --force; this is the only thing --force touches. (The
   // executable engine is baked into the worker image + host CLI, not vendored.)
-  writeOut("\nPrompt contract (vendored into ./claudopilot/):");
-  for (const rel of ENGINE_FILES) {
-    copyFile(join(PKG_ROOT, rel), join(cwd, "claudopilot", rel), force);
+  writeOut("\nPrompt contract (vendored into .claudopilot/prompts/):");
+  for (const [tpl, dest] of ENGINE_FILES) {
+    copyFile(join(PKG_ROOT, tpl), join(cwd, dest), force);
   }
 
   // Core project files: yours to edit, never overwritten.
@@ -209,7 +247,7 @@ function cmdInit(args: readonly string[]): number {
   const emitExamples = withExamples && !roadmapSetUp;
   if (withExamples && roadmapSetUp) {
     writeOut(
-      "\nroadmap/ already has content — skipping examples (your roadmap is left as-is).",
+      "\nroadmap already has content — skipping examples (your roadmap is left as-is).",
     );
   }
 
@@ -225,11 +263,15 @@ function cmdInit(args: readonly string[]): number {
     }
   }
 
+  // Keep run-state out of version control.
+  writeOut("\nVersion control:");
+  ensureGitignore(cwd);
+
   const nextSteps = [
     "\nDone. Next steps:",
-    "  1. Edit claudopilot.config.sh   — set GATE_CMD and build/bootstrap commands.",
-    "  2. Edit claudopilot/prompts/worker.project.md — your project's cornerstones.",
-    "  3. Fill in roadmap/EXECUTION-MANIFEST.md + per-phase docs.",
+    "  1. Edit .claudopilot/config.json — set gateCmd and build/bootstrap commands.",
+    "  2. Edit .claudopilot/prompts/worker.project.md — your project's cornerstones.",
+    "  3. Fill in .claudopilot/roadmap/EXECUTION-MANIFEST.md + per-phase docs.",
   ];
   if (!withExamples) {
     nextSteps.push(

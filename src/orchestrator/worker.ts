@@ -19,6 +19,7 @@ import type { CapturePaths, Config } from "../types.js";
 import type { Git } from "../git.js";
 import { captureAgent, RESUME_NUDGE } from "../agent/capture.js";
 import { killTree as defaultKillTree, reapExit } from "../platform/process.js";
+import { runDir } from "../platform/paths.js";
 import type {
   DockerLike,
   DockerMount,
@@ -143,13 +144,13 @@ export async function prepareWorktree(
   return { branch, worktree };
 }
 
-/** Mirrors `set_capture_paths`. Isolated → inside the clone's `.claudopilot`. */
+/** Mirrors `set_capture_paths`. Isolated → inside the clone's run-state dir. */
 export function setCapturePaths(
   id: string,
   config: Config,
   worktree: string,
 ): CapturePaths {
-  const base = config.isolated ? path.join(worktree, ".claudopilot") : config.runDir;
+  const base = config.isolated ? runDir(worktree) : config.runDir;
   return {
     log: path.join(base, `${id}.log`),
     stream: path.join(base, `${id}.stream.jsonl`),
@@ -273,7 +274,7 @@ async function launchIsolated(
     throw new Error(`isolated mode requires a DockerLike (id=${id})`);
   }
 
-  const promptDir = path.join(worktree, ".claudopilot");
+  const promptDir = runDir(worktree);
   await mkdir(promptDir, { recursive: true });
   const promptPath = path.join(promptDir, `${id}.prompt.txt`);
   await writeFile(promptPath, workerPrompt + workerPromptSuffixIsolated(id), "utf8");

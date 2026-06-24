@@ -27,6 +27,12 @@ import {
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { parseManifest } from "../manifest.js";
+import {
+  worktreeDir,
+  cloneCapturePath,
+  mainCapturePath,
+  logFilePath,
+} from "../platform/paths.js";
 import type {
   ProgressPhase,
   ProgressSliceEntry,
@@ -99,9 +105,7 @@ function enrichPhase(
   const id = p.id;
   const branch = `auto/${id}`;
   const hasBranch = git(repoRoot, "rev-parse", "--verify", "--quiet", branch) !== null;
-  const hasWorktree = existsSync(
-    path.join(repoRoot, ".claudopilot", "worktrees", id),
-  );
+  const hasWorktree = existsSync(worktreeDir(repoRoot, id));
   const loc = locatePhaseDoc(repoRoot, roadmapDir, id);
   const docText = loc ? readMaybe(loc.path) ?? "" : "";
   const { seeded, slices } = parseSlices(docText);
@@ -141,19 +145,8 @@ function enrichPhase(
       out.activity = step.detail ? `${step.label}: ${step.detail}` : step.label;
     } else {
       const txt =
-        readMaybe(
-          path.join(
-            repoRoot,
-            ".claudopilot",
-            "worktrees",
-            id,
-            ".claudopilot",
-            `${id}.transcript.md`,
-          ),
-        ) ??
-        readMaybe(
-          path.join(repoRoot, ".claudopilot", `${id}.transcript.md`),
-        );
+        readMaybe(cloneCapturePath(repoRoot, id, `${id}.transcript.md`)) ??
+        readMaybe(mainCapturePath(repoRoot, id, `${id}.transcript.md`));
       if (txt) {
         const lines = txt
           .split("\n")
@@ -181,9 +174,12 @@ function locatePhaseDoc(
   roadmapDir: string,
   id: string,
 ): DocLoc | null {
+  // The worktree is a checkout of the repo, so its roadmap sits at the same
+  // path relative to root as the main one (.claudopilot/roadmap or ./roadmap).
+  const relRoadmap = path.relative(repoRoot, roadmapDir);
   const candidates: Array<{ dir: string; source: "worktree" | "main" }> = [
     {
-      dir: path.join(repoRoot, ".claudopilot", "worktrees", id, "roadmap"),
+      dir: path.join(worktreeDir(repoRoot, id), relRoadmap),
       source: "worktree",
     },
     { dir: roadmapDir, source: "main" },
@@ -267,15 +263,8 @@ export function parseSlices(text: string): SlicesParsed {
 
 function streamPath(repoRoot: string, id: string): string | null {
   const cands = [
-    path.join(
-      repoRoot,
-      ".claudopilot",
-      "worktrees",
-      id,
-      ".claudopilot",
-      `${id}.stream.jsonl`,
-    ),
-    path.join(repoRoot, ".claudopilot", `${id}.stream.jsonl`),
+    cloneCapturePath(repoRoot, id, `${id}.stream.jsonl`),
+    mainCapturePath(repoRoot, id, `${id}.stream.jsonl`),
   ];
   return cands.find((c) => existsSync(c)) ?? null;
 }
@@ -466,7 +455,7 @@ function containerStatus(): string | null {
 }
 
 function driverLogTail(repoRoot: string): string | null {
-  const text = readMaybe(path.join(repoRoot, ".claudopilot.log"));
+  const text = readMaybe(logFilePath(repoRoot));
   if (!text) return null;
   const lines = text
     .trim()

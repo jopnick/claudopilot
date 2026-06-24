@@ -20,7 +20,7 @@ otherwise get wrong:
 ## This project's quality gate
 
 The exact `GATE_CMD` is injected at the end of your prompt by the engine (from
-`claudopilot.config.sh`). For this repo it is:
+`.claudopilot/config.json`). For this repo it is:
 
 ```
 <your gate command, e.g. npm run typecheck && npm run lint && npm test>
