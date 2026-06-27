@@ -3,7 +3,8 @@ import { promises as fs } from "node:fs";
 import { readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { main } from "./cli.js";
+import { pathToFileURL } from "node:url";
+import { main, isMainEntry } from "./cli.js";
 
 const PKG_VERSION = (JSON.parse(
   readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"),
@@ -296,4 +297,46 @@ describe("cli migrate", () => {
       expect(cfg).not.toHaveProperty("manifest");
     },
   );
+});
+
+describe("isMainEntry (symlinked-install entry detection)", () => {
+  let tmp = "";
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "cp-entry-"));
+  });
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it("returns false when there is no entry (argv[1] undefined)", () => {
+    expect(isMainEntry(undefined, pathToFileURL(path.join(tmp, "cli.js")).href)).toBe(false);
+  });
+
+  it("matches when the entry path equals the module file (node dist/cli.js)", async () => {
+    const real = path.join(tmp, "cli.js");
+    await fs.writeFile(real, "// cli\n");
+    expect(isMainEntry(real, pathToFileURL(real).href)).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "matches when the entry is a symlink to the module file (pnpm / global install)",
+    async () => {
+      // import.meta.url resolves symlinks, so the module URL is the real file
+      // while argv[1] is the symlink path — the case a raw string compare missed.
+      const real = path.join(tmp, "store", "cli.js");
+      await fs.mkdir(path.dirname(real), { recursive: true });
+      await fs.writeFile(real, "// cli\n");
+      const link = path.join(tmp, "bin-cli.js");
+      await fs.symlink(real, link);
+      expect(isMainEntry(link, pathToFileURL(real).href)).toBe(true);
+    },
+  );
+
+  it("does not match an unrelated entry path", async () => {
+    const real = path.join(tmp, "cli.js");
+    await fs.writeFile(real, "// cli\n");
+    const other = path.join(tmp, "not-cli.js");
+    await fs.writeFile(other, "// other\n");
+    expect(isMainEntry(other, pathToFileURL(real).href)).toBe(false);
+  });
 });
