@@ -10,6 +10,9 @@ import {
   commitBuildLog,
   lockfileRegenCmdFor,
   markResume,
+  mergePhase,
+  pushWorkBranch,
+  squashCommitMessage,
   supervise,
   type SupervisorContext,
 } from "./supervisor.js";
@@ -46,6 +49,10 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     retryTransientApi: true,
     transientApiMaxRetries: 10,
     stuckTimeout: 0,
+    openPr: false,
+    prBase: "main",
+    prTitle: "",
+    prDraft: false,
     runDir: "/repo/.claudopilot",
     worktreesDir: "/repo/.claudopilot/worktrees",
     controlDir: "/repo/.claudopilot/control",
@@ -74,10 +81,18 @@ interface FakeGitMem {
   branches: Set<string>;
   lsTreeResults: Map<string, string[]>;
   logTouchingResults: Map<string, string[]>;
+  logSubjectsResult: string[];
   added: string[];
   committed: Array<{ message: string; noVerify: boolean }>;
   unresolvedQueue: string[][];
   hasStagedQueue: boolean[];
+  pushed: string[];
+  pushedForce: string[];
+  pushDeleted: string[];
+  calls: string[];
+  mergeSquashResult: { code: number };
+  hasRemote: boolean;
+  revParseValue: string | null;
   cwd: string;
 }
 
@@ -89,10 +104,18 @@ function makeFakeGit(cwd: string, seed: Partial<FakeGitMem> = {}): {
     branches: new Set(),
     lsTreeResults: new Map(),
     logTouchingResults: new Map(),
+    logSubjectsResult: [],
     added: [],
     committed: [],
     unresolvedQueue: [],
     hasStagedQueue: [],
+    pushed: [],
+    pushedForce: [],
+    pushDeleted: [],
+    calls: [],
+    mergeSquashResult: { code: 0 },
+    hasRemote: true,
+    revParseValue: "deadbeef",
     cwd,
     ...seed,
   };
@@ -102,6 +125,7 @@ function makeFakeGit(cwd: string, seed: Partial<FakeGitMem> = {}): {
     lsTree: async (ref: string): Promise<string[]> => mem.lsTreeResults.get(ref) ?? [],
     logTouching: async (ref: string): Promise<string[]> =>
       mem.logTouchingResults.get(ref) ?? [],
+    logSubjects: async (): Promise<string[]> => mem.logSubjectsResult,
     add: async (p: string | string[]) => {
       const ps = Array.isArray(p) ? p : [p];
       mem.added.push(...ps);
@@ -118,8 +142,28 @@ function makeFakeGit(cwd: string, seed: Partial<FakeGitMem> = {}): {
     pullFfOnly: async () => dummy,
     merge: async () => dummy,
     mergeAbort: async () => dummy,
-    push: async () => dummy,
-    pushDelete: async () => dummy,
+    mergeSquash: async () => {
+      mem.calls.push("mergeSquash");
+      return { ...dummy, ...mem.mergeSquashResult };
+    },
+    resetHard: async () => {
+      mem.calls.push("resetHard");
+      return dummy;
+    },
+    hasRemote: async () => mem.hasRemote,
+    revParse: async () => mem.revParseValue,
+    push: async (_remote: string, branch: string) => {
+      mem.pushed.push(branch);
+      return dummy;
+    },
+    pushForceWithLease: async (_remote: string, branch: string) => {
+      mem.pushedForce.push(branch);
+      return dummy;
+    },
+    pushDelete: async (_remote: string, branch: string) => {
+      mem.pushDeleted.push(branch);
+      return dummy;
+    },
     checkoutOurs: async () => dummy,
     run: async () => dummy,
     cwd,
@@ -370,5 +414,125 @@ describe("lockfileRegenCmdFor", () => {
   it("returns undefined for non-lockfile paths", () => {
     expect(lockfileRegenCmdFor("src/index.ts")).toBeUndefined();
     expect(lockfileRegenCmdFor("Gemfile.lock")).toBeUndefined();
+  });
+});
+
+describe("squashCommitMessage", () => {
+  it("uses just the subject when there are no commits to roll up", () => {
+    expect(squashCommitMessage(makeRecord("phase-x"), [])).toBe(
+      "phase-x (autonomous, squashed)",
+    );
+  });
+
+  it("lists the squashed subjects oldest-first in the body", () => {
+    const msg = squashCommitMessage(makeRecord("phase-x"), ["newest", "oldest"]);
+    expect(msg).toContain("phase-x (autonomous, squashed)");
+    expect(msg).toContain("Squashed commits from auto/phase-x:");
+    // logSubjects yields newest-first; the body reverses to oldest-first.
+    expect(msg.indexOf("- oldest")).toBeLessThan(msg.indexOf("- newest"));
+  });
+});
+
+describe("mergePhase (squash)", () => {
+  const missing = {
+    transcript: "/tmp/cp-no-such-dir/x.transcript.md",
+    stream: "/tmp/cp-no-such-dir/x.stream.jsonl",
+  };
+
+  it("squash-merges as one commit, marks merged, pushes base, deletes remote branch", async () => {
+    const { mem, git } = makeFakeGit("/repo", { logSubjectsResult: ["feat: a", "fix: b"] });
+    const sets: Array<[string, PhaseState]> = [];
+    const cleaned: string[] = [];
+    const res = await mergePhase(
+      baseConfig(),
+      git,
+      makeRecord("phase-x", missing),
+      async (id, s) => {
+        sets.push([id, s]);
+      },
+      async (id) => {
+        cleaned.push(id);
+      },
+      "autonomous-runner",
+    );
+
+    expect(res.ok).toBe(true);
+    expect(mem.calls).toContain("mergeSquash");
+    expect(mem.calls).not.toContain("resetHard");
+    expect(mem.committed).toHaveLength(1);
+    expect(mem.committed[0]!.message).toContain("phase-x (autonomous, squashed)");
+    expect(mem.committed[0]!.message).toContain("- feat: a");
+    expect(sets).toContainEqual(["phase-x", "merged"]);
+    expect(mem.pushed).toContain("autonomous-runner");
+    expect(cleaned).toContain("phase-x");
+    expect(mem.pushDeleted).toContain("auto/phase-x");
+  });
+
+  it("aborts a non-derived conflict with a hard reset and reports failure", async () => {
+    const { mem, git } = makeFakeGit("/repo", {
+      mergeSquashResult: { code: 1 },
+      unresolvedQueue: [["src/index.ts"]], // not a lockfile → not auto-resolvable
+    });
+    const sets: Array<[string, PhaseState]> = [];
+    const res = await mergePhase(
+      baseConfig(),
+      git,
+      makeRecord("phase-x", missing),
+      async (id, s) => {
+        sets.push([id, s]);
+      },
+      async () => {},
+      "autonomous-runner",
+    );
+
+    expect(res.ok).toBe(false);
+    expect(res.reason).toContain("MERGE CONFLICT");
+    expect(mem.calls).toContain("resetHard");
+    expect(mem.committed).toHaveLength(0);
+    expect(sets).not.toContainEqual(["phase-x", "merged"]);
+    expect(mem.pushDeleted).toHaveLength(0);
+  });
+
+  it("skips remote ops when no origin is configured", async () => {
+    const { mem, git } = makeFakeGit("/repo", { hasRemote: false });
+    const res = await mergePhase(
+      baseConfig(),
+      git,
+      makeRecord("phase-x", missing),
+      async () => {},
+      async () => {},
+      "autonomous-runner",
+    );
+    expect(res.ok).toBe(true);
+    expect(mem.pushed).toHaveLength(0);
+    expect(mem.pushDeleted).toHaveLength(0);
+  });
+});
+
+describe("pushWorkBranch", () => {
+  it("pushes the phase work branch to origin", async () => {
+    const { mem, git } = makeFakeGit("/repo");
+    await pushWorkBranch(baseConfig(), git, makeRecord("phase-x"));
+    expect(mem.pushed).toContain("auto/phase-x");
+  });
+
+  it("skips when no origin remote is configured", async () => {
+    const { mem, git } = makeFakeGit("/repo", { hasRemote: false });
+    await pushWorkBranch(baseConfig(), git, makeRecord("phase-x"));
+    expect(mem.pushed).toHaveLength(0);
+  });
+
+  it("skips when the branch has no commits yet", async () => {
+    const { mem, git } = makeFakeGit("/repo", { revParseValue: null });
+    await pushWorkBranch(baseConfig(), git, makeRecord("phase-x"));
+    expect(mem.pushed).toHaveLength(0);
+  });
+
+  it("retries with force-with-lease when a plain push fails", async () => {
+    const { mem, git } = makeFakeGit("/repo");
+    // Make the plain push fail so the force-with-lease fallback fires.
+    (git as unknown as { push: () => Promise<{ code: number }> }).push = async () => ({ code: 1 });
+    await pushWorkBranch(baseConfig(), git, makeRecord("phase-x"));
+    expect(mem.pushedForce).toContain("auto/phase-x");
   });
 });

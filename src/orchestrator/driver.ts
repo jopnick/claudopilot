@@ -41,6 +41,7 @@ import {
 import { captureAgent } from "../agent/capture.js";
 import { onShutdown, installShutdownHandlers } from "../platform/signals.js";
 import { runDir } from "../platform/paths.js";
+import { openPullRequest, type OpenPrFn } from "../pr.js";
 import type { DockerLike, WorkerExit, WorkerRecord } from "./types.js";
 import {
   prepareWorktree,
@@ -55,6 +56,7 @@ import {
   branchHasDone,
   markResume,
   mergePhase,
+  pushWorkBranch,
   supervise,
   type SupervisorContext,
   type SupervisorMode,
@@ -213,6 +215,8 @@ export interface DriverDeps {
   shellRunFn?: (cmd: string, opts: { cwd: string }) => Promise<{ code: number | null }>;
   /** Optional manifest store override; default constructs one from git+config. */
   manifest?: ManifestStore;
+  /** Open-PR implementation (default: `gh` via {@link openPullRequest}). Test seam. */
+  openPrFn?: OpenPrFn;
 }
 
 export interface DriverInput {
@@ -238,6 +242,38 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
   const sleep = deps.sleep ?? defaultSleep;
   const store = deps.manifest ?? manifestStore(config, deps.git, log);
   const shellRun = deps.shellRunFn ?? defaultShellRun;
+  const openPr = deps.openPrFn ?? openPullRequest;
+
+  /**
+   * Open the run-level PR (baseBranch → prBase) once all phases have merged.
+   * No-op unless `config.openPr` is set. Best-effort: a same-branch target, a
+   * missing remote, or a `gh` failure is logged and skipped — never fatal.
+   */
+  const maybeOpenPr = async (): Promise<void> => {
+    if (!config.openPr) return;
+    if (baseBranch === config.prBase) {
+      log(`  openPr: base branch '${baseBranch}' equals prBase — skipping PR.`);
+      return;
+    }
+    if (!(await deps.git.hasRemote("origin"))) {
+      log("  openPr: no 'origin' remote configured — skipping PR.");
+      return;
+    }
+    const r = await openPr({
+      cwd: config.repoRoot,
+      head: baseBranch,
+      base: config.prBase,
+      ...(config.prTitle ? { title: config.prTitle } : {}),
+      draft: config.prDraft,
+    });
+    if (r.ok) {
+      log(
+        `  openPr: ${r.alreadyExists ? "PR already open" : `opened PR ${baseBranch} -> ${config.prBase}`}${r.url ? ` ${r.url}` : ""}`,
+      );
+    } else {
+      log(`  openPr: WARNING could not open PR (${r.reason}).`);
+    }
+  };
 
   // ── Trunk guard ─────────────────────────────────────────────────────
   if (TRUNK_RE.test(baseBranch) && !input.baseBranchExplicit) {
@@ -455,6 +491,10 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
     log(`REAP [${record.id}] worker exit=${code}`);
     const logText = tailLines(await readSafe(record.paths.log));
     const hasDone = await branchHasDone(config, deps.git, record.id, record.worktree);
+    // Back up the phase's work branch to origin on every reap (merged, parked,
+    // or blocked) so engineers can always pull the latest in-flight state.
+    // Merged phases get their pushed branch cleaned up again inside mergePhase.
+    await pushWorkBranch(config, deps.git, record, log);
     const decision = routeExit({
       code,
       hasDone,
@@ -525,6 +565,7 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
         if (allMerged(model)) {
           await store.markComplete();
           await deps.git.push("origin", baseBranch);
+          await maybeOpenPr();
           log(`All phases merged after ${iter} passes. Exiting 0.`);
           exitCode = 0;
           break;

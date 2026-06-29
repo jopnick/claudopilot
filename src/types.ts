@@ -70,6 +70,15 @@ export interface Config {
   transientApiMaxRetries: number;
   stuckTimeout: number;
 
+  /** Open a PR (base branch → {@link prBase}) via `gh` once all phases merge. */
+  openPr: boolean;
+  /** Target branch for the auto-opened PR (e.g. "main"). */
+  prBase: string;
+  /** Optional PR title; empty → derive from the squashed commits (`gh --fill`). */
+  prTitle: string;
+  /** Open the auto PR as a draft. */
+  prDraft: boolean;
+
   runDir: string;
   worktreesDir: string;
   controlDir: string;

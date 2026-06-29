@@ -152,6 +152,29 @@ export STUCK_TIMEOUT=300
     expect(c.maxParallel).toBe(3);
   });
 
+  it("defaults the open-PR knobs to off / main", async () => {
+    const c = await loadConfig(repo, {});
+    expect(c.openPr).toBe(false);
+    expect(c.prBase).toBe("main");
+    expect(c.prTitle).toBe("");
+    expect(c.prDraft).toBe(false);
+  });
+
+  it("reads the open-PR knobs from config + env", async () => {
+    await fs.writeFile(
+      path.join(repo, "claudopilot.config.sh"),
+      `export OPEN_PR=1
+export PR_BASE='develop'
+export PR_DRAFT=1
+`,
+    );
+    const c = await loadConfig(repo, { PR_TITLE: "Autonomous batch" });
+    expect(c.openPr).toBe(true);
+    expect(c.prBase).toBe("develop");
+    expect(c.prTitle).toBe("Autonomous batch");
+    expect(c.prDraft).toBe(true);
+  });
+
   it("preserves empty-string overrides for optional commands", async () => {
     // An explicit empty value should unset, not fall back to default. Tested
     // here on WORKTREE_PREPARE_CMD whose default is already "".

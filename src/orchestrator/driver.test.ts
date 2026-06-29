@@ -11,6 +11,7 @@ import {
   runDriver,
   type DriverDeps,
 } from "./driver.js";
+import type { OpenPrOptions } from "../pr.js";
 
 function cfg(overrides: Partial<Config> = {}): Config {
   return {
@@ -43,6 +44,10 @@ function cfg(overrides: Partial<Config> = {}): Config {
     retryTransientApi: true,
     transientApiMaxRetries: 10,
     stuckTimeout: 0,
+    openPr: false,
+    prBase: "main",
+    prTitle: "",
+    prDraft: false,
     runDir: "/repo/.claudopilot",
     worktreesDir: "/repo/.claudopilot/worktrees",
     controlDir: "/repo/.claudopilot/control",
@@ -351,6 +356,102 @@ describe("runDriver trunk guard + completion", () => {
     const txt = await readFile(mf, "utf8");
     expect(txt).toContain("**Status:** complete");
     expect(committedCount).toBeGreaterThan(0);
+  });
+
+  it("opens a run-level PR on completion when openPr is set", async () => {
+    const mf = path.join(tmp, "M.md");
+    await writeFile(
+      mf,
+      "**Status:** running\n\n## Order\n\n1. [merged] **phase-01** — x (deps: none)\n",
+    );
+    await mkdir(path.join(tmp, "prompts"), { recursive: true });
+    await writeFile(path.join(tmp, "prompts", "worker.md"), "p");
+    const conf = cfg({
+      repoRoot: tmp,
+      manifest: mf,
+      promptFile: path.join(tmp, "prompts", "worker.md"),
+      runDir: path.join(tmp, "rd"),
+      worktreesDir: path.join(tmp, "rd/wt"),
+      controlDir: path.join(tmp, "rd/c"),
+      openPr: true,
+      prBase: "main",
+      prTitle: "Batch",
+    });
+    const r0 = { code: 0, signal: null, stdout: "", stderr: "", timedOut: false };
+    const git = {
+      add: async () => r0,
+      commit: async () => r0,
+      push: async () => r0,
+      hasRemote: async () => true,
+    };
+    const prCalls: OpenPrOptions[] = [];
+    const deps: DriverDeps = {
+      git: git as unknown as DriverDeps["git"],
+      log: () => {},
+      sleep: async () => {},
+      shellRunFn: async () => ({ code: 0 }),
+      openPrFn: async (o) => {
+        prCalls.push(o);
+        return { ok: true, url: "https://github.com/acme/repo/pull/1" };
+      },
+    };
+    const code = await runDriver(deps, {
+      config: conf,
+      baseBranch: "autonomous-runner",
+      workerPrompt: "WP",
+      supervisorPrompt: "SP",
+    });
+    expect(code).toBe(0);
+    expect(prCalls).toHaveLength(1);
+    expect(prCalls[0]!.base).toBe("main");
+    expect(prCalls[0]!.head).toBe("autonomous-runner");
+    expect(prCalls[0]!.title).toBe("Batch");
+  });
+
+  it("skips the PR when the base branch equals prBase", async () => {
+    const mf = path.join(tmp, "M.md");
+    await writeFile(
+      mf,
+      "**Status:** running\n\n## Order\n\n1. [merged] **phase-01** — x (deps: none)\n",
+    );
+    await mkdir(path.join(tmp, "prompts"), { recursive: true });
+    await writeFile(path.join(tmp, "prompts", "worker.md"), "p");
+    const conf = cfg({
+      repoRoot: tmp,
+      manifest: mf,
+      promptFile: path.join(tmp, "prompts", "worker.md"),
+      runDir: path.join(tmp, "rd"),
+      worktreesDir: path.join(tmp, "rd/wt"),
+      controlDir: path.join(tmp, "rd/c"),
+      openPr: true,
+      prBase: "autonomous-runner",
+    });
+    const r0 = { code: 0, signal: null, stdout: "", stderr: "", timedOut: false };
+    const git = {
+      add: async () => r0,
+      commit: async () => r0,
+      push: async () => r0,
+      hasRemote: async () => true,
+    };
+    let prCalled = false;
+    const deps: DriverDeps = {
+      git: git as unknown as DriverDeps["git"],
+      log: () => {},
+      sleep: async () => {},
+      shellRunFn: async () => ({ code: 0 }),
+      openPrFn: async () => {
+        prCalled = true;
+        return { ok: true };
+      },
+    };
+    const code = await runDriver(deps, {
+      config: conf,
+      baseBranch: "autonomous-runner",
+      workerPrompt: "WP",
+      supervisorPrompt: "SP",
+    });
+    expect(code).toBe(0);
+    expect(prCalled).toBe(false);
   });
 
   it("returns 3 when manifest is missing", async () => {
