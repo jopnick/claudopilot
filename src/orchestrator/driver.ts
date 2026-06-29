@@ -21,6 +21,7 @@
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import type { Config, ManifestModel, PhaseState } from "../types.js";
@@ -41,6 +42,12 @@ import {
 import { captureAgent } from "../agent/capture.js";
 import { onShutdown, installShutdownHandlers } from "../platform/signals.js";
 import { runDir } from "../platform/paths.js";
+import {
+  makeCoordinator,
+  noopCoordinator,
+  LOCK_PREFIX,
+  type Coordinator,
+} from "../coordinate.js";
 import type { DockerLike, WorkerExit, WorkerRecord } from "./types.js";
 import {
   prepareWorktree,
@@ -213,6 +220,8 @@ export interface DriverDeps {
   shellRunFn?: (cmd: string, opts: { cwd: string }) => Promise<{ code: number | null }>;
   /** Optional manifest store override; default constructs one from git+config. */
   manifest?: ManifestStore;
+  /** Cross-engineer lock coordinator. Default: derived from git+config (or a no-op when `coordinateLocks` is off). Test seam. */
+  coordinator?: Coordinator;
 }
 
 export interface DriverInput {
@@ -292,7 +301,13 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
     log,
   };
 
-  // SIGINT/SIGTERM: TERM in-flight workers + cleanup their containers.
+  // Cross-engineer coordination: claim a remote ref-lock per phase before
+  // launching it, so two engineers running the same roadmap never work the same
+  // phase concurrently. Disabled (no-op) unless COORDINATE_LOCKS is set.
+  const coordinator = deps.coordinator ?? (await buildCoordinator(deps.git, config, log));
+
+  // SIGINT/SIGTERM: TERM in-flight workers + cleanup their containers, then
+  // release any locks we hold so other engineers can pick the work up.
   installShutdownHandlers();
   const offShutdown = onShutdown(async () => {
     log("Received shutdown signal — terminating in-flight workers.");
@@ -302,6 +317,11 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
       } catch {
         /* ignore */
       }
+    }
+    try {
+      await coordinator.releaseAll();
+    } catch {
+      /* ignore */
     }
   });
 
@@ -384,6 +404,8 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
       failed = true;
       haltCode = code;
     }
+    // Hand the phase back so another engineer can retry it.
+    await coordinator.release(id);
   };
 
   const launchPhase = async (id: string, opts?: { supervisorMode?: SupervisorMode; resumeSid?: string; attempt?: number }): Promise<void> => {
@@ -426,6 +448,7 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
       case "merged": {
         const m = await mergePhase(config, deps.git, record, setState, async (id) => cleanup(workerDeps, id, config), baseBranch, log);
         if (!m.ok) await parkOrHalt(record.id, 1, m.reason ?? "merge conflict");
+        else await coordinator.release(record.id);
         break;
       }
       case "relaunch": {
@@ -475,6 +498,7 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
           log,
         );
         if (!m.ok) await parkOrHalt(record.id, 1, m.reason ?? "merge conflict");
+        else await coordinator.release(record.id);
         break;
       }
       case "supervise": {
@@ -588,12 +612,18 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
       const usagePct = Math.floor((100 * ticksInWindow) / Math.max(1, config.maxTicksPerWindow));
       const launchPaused = usagePct >= config.usageThresholdPct;
 
+      // Refresh heartbeats on the locks we hold (throttled inside the coordinator).
+      await coordinator.heartbeat();
+
       // Launch eligible up to the cap.
       if (!failed && !launchPaused) {
         const model = await store.read();
         const eligible = selectEligible(model, new Set(running.keys()), config.maxParallel);
         for (const id of eligible) {
           if (running.size >= config.maxParallel) break;
+          // Claim the cross-engineer lock first; skip the phase this pass if
+          // another engineer holds it (no-op coordinator always grants).
+          if (!(await coordinator.claim(id))) continue;
           try {
             await launchPhase(id);
           } catch (e) {
@@ -698,6 +728,31 @@ async function finishKeepGoing(
       log(`  [${p.id}] stranded behind a blocked dependency — marked [blocked].`);
     }
   }
+}
+
+/**
+ * Construct the cross-engineer lock coordinator. Returns a no-op (every claim
+ * granted) unless `coordinateLocks` is on; otherwise a git-ref-lock coordinator
+ * stamped with this engine's identity (`engineerId` or git `user.email`).
+ */
+async function buildCoordinator(
+  git: Git,
+  config: Config,
+  log: (m: string) => void,
+): Promise<Coordinator> {
+  if (!config.coordinateLocks) return noopCoordinator();
+  const owner = config.engineerId || (await git.configGet("user.email")) || "unknown";
+  const host = os.hostname();
+  log(`Coordination: ON — phase locks under ${LOCK_PREFIX}* on origin (owner ${owner}@${host}).`);
+  return makeCoordinator({
+    git,
+    owner,
+    host,
+    staleSeconds: config.lockStaleSeconds,
+    heartbeatSeconds: config.lockHeartbeatSeconds,
+    now: () => Math.floor(Date.now() / 1000),
+    log,
+  });
 }
 
 async function defaultShellRun(

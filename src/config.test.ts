@@ -152,6 +152,29 @@ export STUCK_TIMEOUT=300
     expect(c.maxParallel).toBe(3);
   });
 
+  it("defaults the coordination knobs to off", async () => {
+    const c = await loadConfig(repo, {});
+    expect(c.coordinateLocks).toBe(false);
+    expect(c.engineerId).toBe("");
+    expect(c.lockHeartbeatSeconds).toBe(60);
+    expect(c.lockStaleSeconds).toBe(900);
+  });
+
+  it("reads the coordination knobs from config + env", async () => {
+    await fs.writeFile(
+      path.join(repo, "claudopilot.config.sh"),
+      `export COORDINATE_LOCKS=1
+export LOCK_HEARTBEAT_SECONDS=30
+export LOCK_STALE_SECONDS=600
+`,
+    );
+    const c = await loadConfig(repo, { ENGINEER_ID: "alice@corp" });
+    expect(c.coordinateLocks).toBe(true);
+    expect(c.engineerId).toBe("alice@corp");
+    expect(c.lockHeartbeatSeconds).toBe(30);
+    expect(c.lockStaleSeconds).toBe(600);
+  });
+
   it("preserves empty-string overrides for optional commands", async () => {
     // An explicit empty value should unset, not fall back to default. Tested
     // here on WORKTREE_PREPARE_CMD whose default is already "".

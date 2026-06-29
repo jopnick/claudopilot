@@ -158,6 +158,70 @@ describe("Git wrapper — config + clone + worktree", () => {
   });
 });
 
+describe("Git wrapper — ref locks / coordination plumbing", () => {
+  let repo: string;
+  let remote: string;
+  let g: Git;
+  beforeEach(async () => {
+    ({ repo, g } = await mkRepo());
+    // A bare repo to act as 'origin' for ref-push tests.
+    remote = await fs.mkdtemp(path.join(os.tmpdir(), "git-remote-"));
+    await g.run(["init", "-q", "--bare", remote]);
+    await g.run(["remote", "add", "origin", remote]);
+  });
+  afterEach(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+    await fs.rm(remote, { recursive: true, force: true });
+  });
+
+  it("commitTree mints a commit object carrying the message", async () => {
+    const sha = await g.commitTree("4b825dc642cb6eb9a060e54bf8d69288fbee4904", "lock-meta-here");
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(await g.commitMessage(sha!)).toBe("lock-meta-here");
+  });
+
+  it("pushRef creates a ref if absent and rejects a second unrelated push", async () => {
+    const tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const ref = "refs/claudopilot/locks/phase-01";
+    const a = await g.commitTree(tree, "alice");
+    const first = await g.pushRef("origin", a!, ref);
+    expect(first.code).toBe(0);
+    // ls-remote now sees the lock.
+    const refs = await g.lsRemote("origin", "refs/claudopilot/locks/*");
+    expect(refs.map((r) => r.ref)).toContain(ref);
+    // A different (unrelated) commit cannot create the same ref — atomic claim.
+    const b = await g.commitTree(tree, "bob");
+    const second = await g.pushRef("origin", b!, ref);
+    expect(second.code).not.toBe(0);
+  });
+
+  it("pushRef with a matching lease can update; a stale lease is rejected", async () => {
+    const tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const ref = "refs/claudopilot/locks/phase-02";
+    const a = await g.commitTree(tree, "v1");
+    await g.pushRef("origin", a!, ref);
+    const b = await g.commitTree(tree, "v2");
+    // Correct lease (expects current value a) → succeeds.
+    expect((await g.pushRef("origin", b!, ref, { lease: `${ref}:${a}` })).code).toBe(0);
+    // Stale lease (still expects a, but it's now b) → rejected.
+    const cc = await g.commitTree(tree, "v3");
+    expect((await g.pushRef("origin", cc!, ref, { lease: `${ref}:${a}` })).code).not.toBe(0);
+  });
+
+  it("pushDeleteRef removes a remote ref", async () => {
+    const tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const ref = "refs/claudopilot/locks/phase-03";
+    const a = await g.commitTree(tree, "x");
+    await g.pushRef("origin", a!, ref);
+    expect((await g.pushDeleteRef("origin", ref)).code).toBe(0);
+    expect(await g.lsRemote("origin", "refs/claudopilot/locks/*")).toEqual([]);
+  });
+
+  it("lsRemote returns [] for a pattern that matches nothing", async () => {
+    expect(await g.lsRemote("origin", "refs/claudopilot/locks/*")).toEqual([]);
+  });
+});
+
 describe("Git wrapper — never throws on non-zero", () => {
   it("returns a result (not throw) for unknown subcommands", async () => {
     const repo = await fs.mkdtemp(path.join(os.tmpdir(), "git-test-"));

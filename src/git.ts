@@ -174,6 +174,86 @@ export class Git {
     return this.run(["push", remote, "--delete", branch]);
   }
 
+  // ── Arbitrary refs (coordination locks live under refs/claudopilot/…) ─────
+
+  /**
+   * `git ls-remote <remote> <pattern>` → `[{ sha, ref }]`. Lists refs on the
+   * remote without fetching their objects — used to see which phase locks
+   * currently exist. Returns [] on any non-zero exit (e.g. remote unreachable).
+   */
+  async lsRemote(
+    remote: string,
+    pattern: string,
+  ): Promise<Array<{ sha: string; ref: string }>> {
+    const r = await this.run(["ls-remote", remote, pattern]);
+    if (r.code !== 0) return [];
+    return r.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [sha, ref] = line.split(/\s+/, 2);
+        return { sha: sha ?? "", ref: ref ?? "" };
+      })
+      .filter((e) => e.sha && e.ref);
+  }
+
+  /**
+   * `git commit-tree <tree> -m <message>` → the new commit SHA (null on
+   * failure). Creates a commit object without touching HEAD/index/worktree —
+   * used to mint a lightweight lock commit carrying JSON metadata in its body.
+   */
+  async commitTree(treeSha: string, message: string): Promise<string | null> {
+    const r = await this.run(["commit-tree", treeSha, "-m", message]);
+    if (r.code !== 0) return null;
+    const sha = r.stdout.trim();
+    return sha.length > 0 ? sha : null;
+  }
+
+  /**
+   * Push a raw object SHA to a fully-qualified remote ref. With no force this
+   * is an atomic create-if-absent (git only allows creating or fast-forwarding
+   * a ref; an unrelated commit is never a fast-forward, so an existing ref
+   * rejects the push). `lease` (`<ref>:<expected-sha>`) does a
+   * `--force-with-lease` update — used to refresh or steal a lock only when the
+   * remote still holds the value we last saw.
+   */
+  async pushRef(
+    remote: string,
+    sha: string,
+    ref: string,
+    opts: { lease?: string } = {},
+  ): Promise<GitResult> {
+    const args = ["push"];
+    if (opts.lease) args.push(`--force-with-lease=${opts.lease}`);
+    args.push(remote, `${sha}:${ref}`);
+    return this.run(args);
+  }
+
+  /**
+   * Delete a fully-qualified remote ref. `lease` (`<ref>:<expected-sha>`) makes
+   * the delete conditional on the ref still pointing where we expect, so we
+   * never clobber a lock another engineer has since taken over.
+   */
+  async pushDeleteRef(
+    remote: string,
+    ref: string,
+    opts: { lease?: string } = {},
+  ): Promise<GitResult> {
+    const args = ["push"];
+    if (opts.lease) args.push(`--force-with-lease=${opts.lease}`);
+    args.push(remote, "--delete", ref);
+    return this.run(args);
+  }
+
+  /** `git log -1 --format=%B <ref>` — the commit message body, trailing
+   * newlines trimmed (git log appends one), or null. */
+  async commitMessage(ref: string): Promise<string | null> {
+    const r = await this.run(["log", "-1", "--format=%B", ref]);
+    if (r.code !== 0) return null;
+    return r.stdout.replace(/[\r\n]+$/, "");
+  }
+
   // ── Index / commits ───────────────────────────────────────────────────
 
   /** `git add <pathspec...>`. */
