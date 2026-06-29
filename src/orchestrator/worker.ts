@@ -49,6 +49,12 @@ export interface LaunchOptions {
   config: Config;
   /** Composed worker prompt body (without the `The phase to execute is:` tail). */
   workerPrompt: string;
+  /**
+   * Full prompt to use verbatim INSTEAD of `workerPrompt + suffix` — set on a
+   * review-fix relaunch so the worker reads the confirmed findings. Ignored when
+   * resuming (the resume nudge always wins).
+   */
+  promptOverride?: string;
   /** Pre-existing capture paths from `setCapturePaths`. */
   paths: CapturePaths;
   /** Pre-existing worktree/clone path from `prepareWorktree`. */
@@ -195,7 +201,9 @@ async function launchDefault(
   const { id, config, workerPrompt, paths, worktree, resumeSid, supervisorMode, attempt } = opts;
   const captureFn = deps.captureAgentFn ?? captureAgent;
   const baseSpawn = deps.spawnFn ?? spawn;
-  const prompt = resumeSid ? RESUME_NUDGE : workerPrompt + workerPromptSuffix(id);
+  const prompt = resumeSid
+    ? RESUME_NUDGE
+    : (opts.promptOverride ?? workerPrompt + workerPromptSuffix(id));
 
   // captureAgent runs the agent CLI in-process; we intercept its spawn via the
   // documented test seam to capture the ChildProcess so the orchestrator can
@@ -277,7 +285,11 @@ async function launchIsolated(
   const promptDir = runDir(worktree);
   await mkdir(promptDir, { recursive: true });
   const promptPath = path.join(promptDir, `${id}.prompt.txt`);
-  await writeFile(promptPath, workerPrompt + workerPromptSuffixIsolated(id), "utf8");
+  await writeFile(
+    promptPath,
+    opts.promptOverride ?? workerPrompt + workerPromptSuffixIsolated(id),
+    "utf8",
+  );
 
   const containerName = `cp-w-${id}`;
   await deps.docker.rmForce(containerName);

@@ -275,6 +275,30 @@ export function renderReviewNote(id: string, findings: readonly ReviewFinding[])
   );
 }
 
+/**
+ * The relaunch prompt for a worker that must fix confirmed review findings on a
+ * `fix` outcome. Review only ever runs on a branch that already has the DONE_
+ * rename, so the worker is told *explicitly* not to treat the phase as finished:
+ * it must address every finding, keep the gate green, and leave the doc DONE_.
+ * The findings are embedded inline (the same set is also written to a worktree
+ * note) so the relaunch is self-contained even on a cold session.
+ */
+export function buildReviewFixPrompt(
+  workerPrompt: string,
+  id: string,
+  findings: readonly ReviewFinding[],
+): string {
+  return (
+    `${workerPrompt}\n\n--- REVIEW FIX REQUIRED ---\n` +
+    `You are in this phase's git worktree on branch auto/${id}. Your work was reviewed before\n` +
+    `merge and the findings below MUST be fixed before it can merge. The phase doc is already\n` +
+    `renamed DONE_ — that is expected; do NOT treat the phase as finished and do NOT stop without\n` +
+    `addressing them. Fix EVERY finding, keep the gate green, leave the phase doc renamed DONE_,\n` +
+    `then stop. Do NOT merge or edit the manifest — the driver owns those.\n\n` +
+    renderReviewNote(id, findings)
+  );
+}
+
 // ── The gate ──────────────────────────────────────────────────────────────
 
 export interface ReviewMemory {

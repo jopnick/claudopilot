@@ -13,6 +13,7 @@ import {
   parseReviewerResult,
   parseSkepticVerdict,
   syntheticBlocker,
+  buildReviewFixPrompt,
   runReviewGate,
   newReviewMemory,
   type ReviewContext,
@@ -364,5 +365,23 @@ describe("syntheticBlocker", () => {
     const f = syntheticBlocker("scope");
     expect(f).toMatchObject({ id: "review-error-scope", severity: "blocker", synthetic: true });
     expect(gatingFindings([f])).toHaveLength(1);
+  });
+});
+
+describe("buildReviewFixPrompt", () => {
+  const findings: ReviewFinding[] = [
+    { id: "correctness-off-by-one", severity: "blocker", lens: "correctness", title: "off-by-one in loop" },
+    { id: "scope-unowned-pkg", severity: "major", lens: "scope", file: "pkg/x.ts", title: "edits unowned pkg" },
+  ];
+
+  it("keeps the worker prompt, embeds every finding, and warns against early exit", () => {
+    const p = buildReviewFixPrompt("WORKER BODY", "phase-7", findings);
+    expect(p).toContain("WORKER BODY");
+    expect(p).toContain("auto/phase-7");
+    expect(p).toContain("off-by-one in loop");
+    expect(p).toContain("edits unowned pkg");
+    // The branch is already DONE_ — the worker must not treat the phase as done.
+    expect(p).toContain("do NOT treat the phase as finished");
+    expect(p).toMatch(/do NOT merge or edit the manifest/i);
   });
 });

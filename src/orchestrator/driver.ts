@@ -9,7 +9,8 @@
  *   3  dependency deadlock / malformed manifest
  *   4  worker reported a dependency error
  *   5  supervisor attempts exhausted in WIP state
- *   6  worker stopped without DONE_, supervisor could not recover
+ *   6  worker stopped without DONE_, supervisor could not recover (also: the
+ *      convergence review gate parked a phase — oscillating / non-converging)
  *   7  hit MAX_ITER scheduling passes without completion
  *   8  KEEP_GOING run finished with one or more phases [blocked]
  *
@@ -23,7 +24,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import type { Config, ManifestModel, PhaseState } from "../types.js";
+import type { Config, ManifestModel, PhaseState, CapturePaths } from "../types.js";
 import type { Git } from "../git.js";
 import {
   parseManifest,
@@ -63,6 +64,15 @@ import {
   processControl,
   checkStuck,
 } from "./control.js";
+import {
+  runReviewGate,
+  newReviewMemory,
+  buildReviewFixPrompt,
+  renderReviewNote,
+  type ReviewContext,
+  type ReviewMemory,
+  type RunReviewAgentArgs,
+} from "./review.js";
 
 // ── Exit-routing decision (pure) ─────────────────────────────────────────
 
@@ -220,6 +230,8 @@ export interface DriverInput {
   baseBranch: string;
   workerPrompt: string;
   supervisorPrompt: string;
+  /** Reviewer/skeptic prompt body — required only when `config.reviewEnabled`. */
+  reviewerPrompt?: string;
   /** Override the default trunk-guard; matches BASE_BRANCH_EXPLICIT=1 in bash. */
   baseBranchExplicit?: boolean;
 }
@@ -373,6 +385,55 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
     setState,
   };
 
+  // ── Convergence review gate (opt-in; see REVIEW-GATE.md) ────────────────
+  // The round counter persists across worker relaunches, so it lives here keyed
+  // by phase id — `launchPhase` builds a fresh WorkerRecord every relaunch.
+  const reviewMemory = new Map<string, ReviewMemory>();
+  // In isolated mode the worker runs in a container against a clone whose only
+  // base ref is the remote-tracking `origin/<base>` captured at clone time; in
+  // default mode the worktree shares the repo's local refs.
+  const reviewBaseRef = config.isolated ? `origin/${baseBranch}` : baseBranch;
+
+  /**
+   * Run one reviewer/skeptic agent and return its captured transcript text (the
+   * gate parses the JSON out of the text — it never trusts the exit code).
+   *
+   * Review runs read-only on the HOST against the phase's worktree/clone in both
+   * modes: the reviewer never writes, commits, or pushes, so it does not need the
+   * worker container's isolation (it does need the agent CLI on the host). Each
+   * reviewer/skeptic gets its own capture slot so transcripts never collide.
+   */
+  const runReviewAgent = async (
+    a: RunReviewAgentArgs,
+  ): Promise<{ code: number | null; text: string }> => {
+    const slot = `${a.id}.review.${a.slot}`;
+    const paths: CapturePaths = {
+      log: path.join(config.runDir, `${slot}.log`),
+      stream: path.join(config.runDir, `${slot}.stream.jsonl`),
+      transcript: path.join(config.runDir, `${slot}.transcript.md`),
+    };
+    const model = config.reviewModel || config.agentModel;
+    const res = await captureAgent({
+      driver: config.agentDriver === "opencode" ? "opencode" : "claude",
+      id: `${a.id}:${a.slot}`,
+      prompt: a.prompt,
+      cwd: a.record.worktree,
+      env: { ...process.env, REVIEW_ROLE: a.role, REVIEW_LENS: a.lens },
+      paths,
+      ...(model ? { model } : {}),
+    });
+    const text = await readSafe(paths.transcript);
+    return { code: res.code, text };
+  };
+
+  const reviewCtx: ReviewContext = {
+    config,
+    git: deps.git,
+    log,
+    reviewerPromptBody: input.reviewerPrompt ?? "",
+    runReviewAgent,
+  };
+
   /** park OR halt based on KEEP_GOING; mirrors `park_or_halt`. */
   const parkOrHalt = async (id: string, code: number, reason: string): Promise<void> => {
     if (config.keepGoing) {
@@ -386,12 +447,23 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
     }
   };
 
-  const launchPhase = async (id: string, opts?: { supervisorMode?: SupervisorMode; resumeSid?: string; attempt?: number }): Promise<void> => {
+  const launchPhase = async (
+    id: string,
+    opts?: {
+      supervisorMode?: SupervisorMode;
+      resumeSid?: string;
+      attempt?: number;
+      /** Skip the first-launch capture truncation (review-fix relaunch). */
+      keepCapture?: boolean;
+      /** Verbatim prompt for the relaunch (review-fix); see worker.ts. */
+      promptOverride?: string;
+    },
+  ): Promise<void> => {
     const pw = await prepareWorktree(workerDeps, { id, config, baseBranch });
     const paths = setCapturePaths(id, config, pw.worktree);
     // On first attempt of this run, blank the capture files (matches the bash
-    // `SUPATT==0` reset). Supervisor retries append.
-    if (!opts?.attempt) {
+    // `SUPATT==0` reset). Supervisor retries and review-fix relaunches append.
+    if (!opts?.attempt && !opts?.keepCapture) {
       await truncate(paths.log);
       await truncate(paths.stream);
       await truncate(paths.transcript);
@@ -410,6 +482,7 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
       ...(opts?.resumeSid ? { resumeSid: opts.resumeSid } : {}),
       ...(opts?.supervisorMode ? { supervisorMode: opts.supervisorMode } : {}),
       ...(opts?.attempt !== undefined ? { attempt: opts.attempt } : {}),
+      ...(opts?.promptOverride ? { promptOverride: opts.promptOverride } : {}),
     });
     running.set(id, rec);
     // Hook the exit promise into the finished queue.
@@ -419,13 +492,76 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
     ticksInWindow++;
   };
 
+  /** The real merge funnel — used directly when review is off, and as the
+   * `merge` outcome of the review gate when it is on. */
+  const doMerge = async (record: WorkerRecord): Promise<void> => {
+    const m = await mergePhase(
+      config,
+      deps.git,
+      record,
+      setState,
+      async (id) => cleanup(workerDeps, id, config),
+      baseBranch,
+      log,
+    );
+    if (!m.ok) await parkOrHalt(record.id, 1, m.reason ?? "merge conflict");
+  };
+
+  /**
+   * The single merge funnel for both a worker-reported `done` and a
+   * supervisor-recovered phase. With review off this is a straight merge; with
+   * review on it runs one review round (see REVIEW-GATE.md) and applies the
+   * outcome: `merge` → real merge; `fix` → relaunch the worker with the findings
+   * (the relaunch's exit re-enters this funnel); `park` → parkOrHalt [blocked].
+   */
+  const mergeOrReview = async (record: WorkerRecord): Promise<void> => {
+    if (!config.reviewEnabled) {
+      await doMerge(record);
+      return;
+    }
+    const memory = reviewMemory.get(record.id) ?? newReviewMemory();
+    reviewMemory.set(record.id, memory);
+    const outcome = await runReviewGate({ ctx: reviewCtx, record, memory, baseBranch: reviewBaseRef });
+    switch (outcome.kind) {
+      case "merge":
+        reviewMemory.delete(record.id);
+        await doMerge(record);
+        break;
+      case "fix": {
+        // Persist the findings in the worktree too, so a human (or a cold
+        // session) can read them independently of the relaunch prompt.
+        if (outcome.findings.length > 0) {
+          const notePath = path.join(record.worktree, config.roadmapDir, `${record.id}.review.md`);
+          try {
+            await fs.mkdir(path.dirname(notePath), { recursive: true });
+            await fs.writeFile(notePath, renderReviewNote(record.id, outcome.findings), "utf8");
+          } catch {
+            /* best-effort — the relaunch prompt also carries the findings */
+          }
+        }
+        log(`  [${record.id}] review: relaunching worker to fix ${outcome.findings.length} confirmed finding(s).`);
+        await launchPhase(record.id, {
+          attempt: record.supervisorAttempts,
+          keepCapture: true,
+          ...(outcome.findings.length > 0
+            ? { promptOverride: buildReviewFixPrompt(workerPrompt, record.id, outcome.findings) }
+            : {}),
+        });
+        break;
+      }
+      case "park":
+        reviewMemory.delete(record.id);
+        await parkOrHalt(record.id, 6, outcome.reason);
+        break;
+    }
+  };
+
   /** Apply the routing decision from supervise(). */
   const applySuperviseOutcome = async (record: WorkerRecord, exitCode: number, body: string): Promise<void> => {
     const outcome = await supervise(supervisorCtx, record, exitCode, body);
     switch (outcome.kind) {
       case "merged": {
-        const m = await mergePhase(config, deps.git, record, setState, async (id) => cleanup(workerDeps, id, config), baseBranch, log);
-        if (!m.ok) await parkOrHalt(record.id, 1, m.reason ?? "merge conflict");
+        await mergeOrReview(record);
         break;
       }
       case "relaunch": {
@@ -465,16 +601,7 @@ export async function runDriver(deps: DriverDeps, input: DriverInput): Promise<n
 
     switch (decision.kind) {
       case "merge": {
-        const m = await mergePhase(
-          config,
-          deps.git,
-          record,
-          setState,
-          async (id) => cleanup(workerDeps, id, config),
-          baseBranch,
-          log,
-        );
-        if (!m.ok) await parkOrHalt(record.id, 1, m.reason ?? "merge conflict");
+        await mergeOrReview(record);
         break;
       }
       case "supervise": {
