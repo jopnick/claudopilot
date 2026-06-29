@@ -110,6 +110,53 @@ describe("Git wrapper — branch + commit ops", () => {
     expect(parents.code).toBe(0);
     expect(parents.stdout.trim().split(/\s+/).length).toBe(2);
   });
+
+  it("merge --squash stages changes as a single-parent commit", async () => {
+    await g.createBranch("topic", "main");
+    await g.checkout("topic");
+    await fs.writeFile(path.join(repo, "t.txt"), "topic\n");
+    await g.add("t.txt");
+    await g.commit({ message: "topic work" });
+    await g.checkout("main");
+    const m = await g.mergeSquash("topic");
+    expect(m.code).toBe(0);
+    // Squash stages changes but does NOT commit (and records no second parent).
+    expect(await g.hasStagedChanges()).toBe(true);
+    await g.commit({ message: "squashed topic" });
+    const parents = await g.run(["rev-list", "--no-walk", "HEAD^@"]);
+    expect(parents.stdout.trim().split(/\s+/).length).toBe(1);
+  });
+
+  it("resetHard discards a half-applied squash merge", async () => {
+    await g.createBranch("topic", "main");
+    await g.checkout("topic");
+    await fs.writeFile(path.join(repo, "t.txt"), "topic\n");
+    await g.add("t.txt");
+    await g.commit({ message: "topic work" });
+    await g.checkout("main");
+    await g.mergeSquash("topic");
+    expect(await g.hasStagedChanges()).toBe(true);
+    expect((await g.resetHard()).code).toBe(0);
+    expect(await g.hasStagedChanges()).toBe(false);
+  });
+
+  it("logSubjects lists commit subjects in a range, newest-first", async () => {
+    await g.createBranch("topic", "main");
+    await g.checkout("topic");
+    await fs.writeFile(path.join(repo, "a.txt"), "a\n");
+    await g.add("a.txt");
+    await g.commit({ message: "feat: a" });
+    await fs.writeFile(path.join(repo, "b.txt"), "b\n");
+    await g.add("b.txt");
+    await g.commit({ message: "fix: b" });
+    expect(await g.logSubjects("main..topic")).toEqual(["fix: b", "feat: a"]);
+  });
+
+  it("hasRemote reflects configured remotes", async () => {
+    expect(await g.hasRemote("origin")).toBe(false);
+    await g.run(["remote", "add", "origin", "https://example.invalid/x.git"]);
+    expect(await g.hasRemote("origin")).toBe(true);
+  });
 });
 
 describe("Git wrapper — config + clone + worktree", () => {

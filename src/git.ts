@@ -147,6 +147,24 @@ export class Git {
     return this.run(["merge", "--abort"]);
   }
 
+  /**
+   * `git merge --squash <branch>` — stage the branch's net changes into the
+   * index WITHOUT creating a commit (and without recording a second parent).
+   * The caller lands them as a single commit. On conflict it behaves like a
+   * normal merge (conflicts in the worktree/index) but leaves no MERGE_HEAD,
+   * so recovery is `resetHard`, not `mergeAbort`.
+   */
+  async mergeSquash(branch: string): Promise<GitResult> {
+    return this.run(["merge", "--squash", branch]);
+  }
+
+  /** `git reset --hard [<ref>]` — discard a half-applied (squash) merge. */
+  async resetHard(ref?: string): Promise<GitResult> {
+    const args = ["reset", "--hard"];
+    if (ref) args.push(ref);
+    return this.run(args);
+  }
+
   /** `git fetch [--quiet] <remote> <refspec>`. */
   async fetchRef(
     remote: string,
@@ -169,9 +187,25 @@ export class Git {
     return this.run(["push", remote, branch]);
   }
 
+  /**
+   * `git push --force-with-lease <remote> <branch>`. Used to re-push a phase's
+   * work branch after a re-run recreated it from a new base (so the remote tip
+   * is no longer an ancestor). `--force-with-lease` refuses if the remote moved
+   * out from under us, so it stays safe against a concurrent push.
+   */
+  async pushForceWithLease(remote: string, branch: string): Promise<GitResult> {
+    return this.run(["push", "--force-with-lease", remote, branch]);
+  }
+
   /** `git push <remote> --delete <branch>`. */
   async pushDelete(remote: string, branch: string): Promise<GitResult> {
     return this.run(["push", remote, "--delete", branch]);
+  }
+
+  /** True iff a remote named `<name>` is configured (has a URL). */
+  async hasRemote(name: string): Promise<boolean> {
+    const r = await this.run(["remote", "get-url", name]);
+    return r.code === 0;
   }
 
   // ── Index / commits ───────────────────────────────────────────────────
@@ -239,6 +273,20 @@ export class Git {
    */
   async logTouching(ref: string, pathspec: string): Promise<string[]> {
     const r = await this.run(["log", ref, "--oneline", "--", pathspec]);
+    if (r.code !== 0) return [];
+    return r.stdout
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  }
+
+  /**
+   * `git log <range> --pretty=format:%s` — one commit subject per line, newest
+   * first. Used to record the squashed-away commit subjects in the body of the
+   * single squash commit so the rolled-up work stays traceable.
+   */
+  async logSubjects(range: string): Promise<string[]> {
+    const r = await this.run(["log", range, "--pretty=format:%s"]);
     if (r.code !== 0) return [];
     return r.stdout
       .split(/\r?\n/)

@@ -193,15 +193,17 @@ export function lockfileRegenCmdFor(file: string): string | undefined {
 
 /**
  * Auto-resolve merge conflicts that touch ONLY derived files (the package
- * manager lockfile). Regenerate them from the merged manifests and complete the
- * merge. Package-manager-agnostic out of the box: pnpm, npm, yarn, and bun
+ * manager lockfile). Regenerate them from the merged manifests and re-stage
+ * them. Package-manager-agnostic out of the box: pnpm, npm, yarn, and bun
  * lockfiles are all recognized and regenerated with the matching command,
  * inferred from which lockfile is in conflict.
  *
  * Tunable via DERIVED_CONFLICT_FILES (ERE) — a conflict is only auto-resolved if
  * every conflicted path matches it — and LOCKFILE_REGEN_CMD, which when set
- * overrides the inferred regen command. Returns true on a clean auto-resolve.
- * Mirrors `resolve_derived_conflicts`.
+ * overrides the inferred regen command. Returns true when every conflict was
+ * resolved (the resolved changes are left STAGED for the caller to commit as
+ * part of its single squash commit — this function does not commit). Mirrors
+ * `resolve_derived_conflicts`.
  */
 export async function resolveDerivedConflicts(
   git: Git,
@@ -239,9 +241,46 @@ export async function resolveDerivedConflicts(
   const r = await runShell(regenCmd, { cwd: (git as unknown as { cwd?: string }).cwd ?? process.cwd() });
   if (r.code !== 0) return false;
   for (const f of unresolved) await git.add(f);
-  if ((await git.unresolvedConflicts()).length > 0) return false;
-  const c = await git.run(["commit", "--no-edit"]);
-  return c.code === 0;
+  // Leave the resolved index staged; mergePhase lands it as the squash commit.
+  return (await git.unresolvedConflicts()).length === 0;
+}
+
+/**
+ * Push a phase's `auto/<id>` work branch to origin so every engineer running
+ * claudopilot can pull the latest state of in-flight work. Called when a worker
+ * is reaped (whether the phase ends up merged, parked, or blocked).
+ *
+ * Best-effort and never throws: a missing `origin`, a branch with no commits
+ * yet, or a transient failure is logged and swallowed. A non-fast-forward push
+ * (a re-run recreated the branch from a fresher base, so the remote tip is no
+ * longer an ancestor) is retried once with `--force-with-lease`. In isolated
+ * mode the real branch tip lives in the per-phase clone, so the host ref is
+ * fast-forwarded from it first.
+ */
+export async function pushWorkBranch(
+  config: Config,
+  git: Git,
+  record: WorkerRecord,
+  log?: (m: string) => void,
+): Promise<void> {
+  if (!(await git.hasRemote("origin"))) return;
+
+  if (config.isolated && (await dirExists(record.worktree))) {
+    await git.fetchRef(record.worktree, `+${record.branch}:${record.branch}`, { quiet: true });
+  }
+  if (!(await git.revParse(record.branch))) return; // nothing committed yet
+
+  const r = await git.push("origin", record.branch);
+  if (r.code === 0) {
+    log?.(`  [${record.id}] pushed ${record.branch} -> origin`);
+    return;
+  }
+  const f = await git.pushForceWithLease("origin", record.branch);
+  if (f.code === 0) {
+    log?.(`  [${record.id}] pushed ${record.branch} -> origin (force-with-lease)`);
+  } else {
+    log?.(`  [${record.id}] WARNING: could not push ${record.branch} to origin (code ${f.code}).`);
+  }
 }
 
 export interface MergeResult {
@@ -251,9 +290,23 @@ export interface MergeResult {
 }
 
 /**
+ * Build the message for the single squash commit. The subject names the phase;
+ * the body lists the worker's individual commit subjects (oldest first) so the
+ * squashed-away history stays traceable from `git log`.
+ */
+export function squashCommitMessage(record: WorkerRecord, subjects: readonly string[]): string {
+  const subject = `${record.id} (autonomous, squashed)`;
+  if (subjects.length === 0) return subject;
+  const body = subjects.slice().reverse().map((s) => `- ${s}`).join("\n");
+  return `${subject}\n\nSquashed commits from ${record.branch}:\n${body}`;
+}
+
+/**
  * The driver-owned merge: checkout base, optionally fetch clone→host in
- * isolated mode, pull-ff origin, `git merge --no-ff`, auto-resolve derived
- * conflicts, set state, commit build log, push, cleanup. Mirrors `merge_phase`.
+ * isolated mode, pull-ff origin, `git merge --squash` (so the whole phase lands
+ * as ONE commit on the base branch), auto-resolve derived conflicts, commit,
+ * set state, commit build log, push base, cleanup, and delete the now-merged
+ * remote work branch. Mirrors `merge_phase` but squashes instead of `--no-ff`.
  */
 export async function mergePhase(
   config: Config,
@@ -264,7 +317,7 @@ export async function mergePhase(
   baseBranch: string,
   log?: (m: string) => void,
 ): Promise<MergeResult> {
-  log?.(`  MERGE [${record.id}] -> ${baseBranch}`);
+  log?.(`  MERGE [${record.id}] -> ${baseBranch} (squash)`);
   await git.checkout(baseBranch);
 
   if (config.isolated && (await dirExists(record.worktree))) {
@@ -272,26 +325,48 @@ export async function mergePhase(
   }
   await git.pullFfOnly("origin", baseBranch);
 
-  const m = await git.merge(record.branch, {
-    noFf: true,
-    message: `Merge ${record.id} (autonomous)`,
-  });
+  // Capture the worker's commit subjects before squashing them away.
+  const subjects = await git.logSubjects(`${baseBranch}..${record.branch}`);
+
+  const m = await git.mergeSquash(record.branch);
   if (m.code !== 0) {
     if (await resolveDerivedConflicts(git, log)) {
-      log?.(`  [${record.id}] merge completed after regenerating derived files`);
+      log?.(`  [${record.id}] squash merge resolved after regenerating derived files`);
     } else {
-      await git.mergeAbort();
+      // A squash merge records no MERGE_HEAD, so abort with a hard reset.
+      await git.resetHard();
       return {
         ok: false,
         reason: "MERGE CONFLICT (non-derived files; concurrent streams must be package-disjoint)",
       };
     }
   }
+
+  // `git merge --squash` never commits — land the staged tree as one commit.
+  if (await git.hasStagedChanges()) {
+    const cr = await git.commit({ message: squashCommitMessage(record, subjects) });
+    if (cr.code !== 0) {
+      await git.resetHard();
+      return { ok: false, reason: `squash commit failed (code ${cr.code})` };
+    }
+  } else {
+    log?.(`  [${record.id}] nothing to merge (already in ${baseBranch}).`);
+  }
+
   await setState(record.id, "merged");
   await commitBuildLog(config, git, record, log);
-  await git.push("origin", baseBranch);
+
+  if (await git.hasRemote("origin")) {
+    const p = await git.push("origin", baseBranch);
+    if (p.code !== 0) log?.(`  [${record.id}] WARNING: push ${baseBranch} -> origin failed (code ${p.code}).`);
+  }
   await cleanup(record.id);
-  await git.pushDelete("origin", record.branch);
+  // The squashed work is now in the base branch; drop the merged work branch
+  // from the remote (it was pushed while in flight). Best-effort.
+  if (await git.hasRemote("origin")) {
+    const d = await git.pushDelete("origin", record.branch);
+    if (d.code === 0) log?.(`  [${record.id}] deleted merged remote branch ${record.branch}`);
+  }
   return { ok: true };
 }
 

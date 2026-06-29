@@ -49,6 +49,10 @@ const JSON_TO_ENV: Record<string, string> = {
   retryTransientApi: "RETRY_TRANSIENT_API",
   transientApiMaxRetries: "TRANSIENT_API_MAX_RETRIES",
   stuckTimeout: "STUCK_TIMEOUT",
+  openPr: "OPEN_PR",
+  prBase: "PR_BASE",
+  prTitle: "PR_TITLE",
+  prDraft: "PR_DRAFT",
   logFile: "LOG_FILE",
 };
 const KNOWN_ENV = new Set(Object.values(JSON_TO_ENV));
@@ -64,6 +68,8 @@ export const BOOL_ENV_KEYS = new Set([
   "KEEP_GOING",
   "IGNORE_LOOP_CHECKPOINTS",
   "RETRY_TRANSIENT_API",
+  "OPEN_PR",
+  "PR_DRAFT",
 ]);
 
 /** Config env keys whose values are integers. */
@@ -313,6 +319,11 @@ export async function loadConfig(
     retryTransientApi: pickBoolNumeric("RETRY_TRANSIENT_API", true),
     transientApiMaxRetries: pickInt("TRANSIENT_API_MAX_RETRIES", 10),
     stuckTimeout: pickInt("STUCK_TIMEOUT", 0),
+
+    openPr: pickBoolNumeric("OPEN_PR", false),
+    prBase: pick("PR_BASE", "main"),
+    prTitle: pickRaw("PR_TITLE", ""),
+    prDraft: pickBoolNumeric("PR_DRAFT", false),
 
     runDir,
     worktreesDir: path.join(runDir, "worktrees"),

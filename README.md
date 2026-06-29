@@ -34,8 +34,11 @@ loop driver.
 - **Windows:** run claudopilot inside **WSL2**. The orchestrator uses POSIX
   process/signal semantics; the worker always runs in a Linux container, so the
   host OS is otherwise abstracted.
-- Optional: a passphrase-less SSH key if you want the loop to `git push` merged
-  work to a remote.
+- Optional: a passphrase-less SSH key (or other credential `git push` can use)
+  if you want the loop to push to a remote. When an `origin` remote is reachable
+  the loop pushes continuously — every reaped `auto/<phase-id>` work branch, the
+  base branch after each squash merge, and the merged-branch deletes. With no
+  `origin` configured all of this is skipped silently and work stays local.
 
 ## Get started in 60 seconds
 
@@ -62,9 +65,13 @@ explains each piece in depth.
 
 The driver schedules by **dependency graph**, not by queue position. Each pass it:
 
-1. reaps finished workers; for each exit-0 worker it **merges** `auto/<phase-id>`
-   into the base branch (serially — the driver is single-threaded for merges, so
-   package-disjoint phases never race) and flips that manifest entry to `[merged]`;
+1. reaps finished workers; it first **pushes** each reaped `auto/<phase-id>`
+   branch to `origin` (so every engineer can pull the latest in-flight state —
+   merged, parked, or blocked), then for each exit-0 worker it **squash-merges**
+   `auto/<phase-id>` into the base branch (serially — the driver is
+   single-threaded for merges, so package-disjoint phases never race) as a single
+   commit, flips that manifest entry to `[merged]`, pushes the base branch, and
+   **deletes the now-merged remote `auto/<phase-id>` branch**;
 2. launches every `[pending]` phase whose `(deps: …)` are all `[merged]`, up to
    `MAX_PARALLEL`, each in a fresh `git worktree` under `.claudopilot/.run/worktrees/`
    (prepared with `pnpm install` so the isolated checkout can build);
@@ -87,9 +94,11 @@ non-zero. A rate-limit-shaped exit triggers a cooldown and a relaunch.
 **Keep-going mode (`KEEP_GOING=1`)** turns this into a fully-autonomous run: the
 final supervisor attempt runs in **best-effort** mode (wider edit mandate), and a
 phase that still can't go green is **parked** — its `auto/<id>` branch is committed
-but **not merged**, marked `[blocked]` — while the run **continues with every
-other independent phase**. Red work is never merged (that would break the shared
-gate for all phases); parked branches stay in git for review/rollback. Dependents
+and **pushed to `origin`** but **not merged**, marked `[blocked]` — while the run
+**continues with every other independent phase**. Red work is never merged (that
+would break the shared gate for all phases); parked branches stay in git (locally
+and on the remote) for review/rollback — their remote branch is kept, not deleted.
+Dependents
 of a blocked phase are skipped. The run ends with a summary (N merged, M blocked)
 and exit code `8` if anything was parked. It's all in git — flip a `[blocked]`
 entry back to `[pending]` and re-run to retry.
@@ -262,8 +271,11 @@ Prerequisites:
     but the token takes precedence for auth.
   - **Interactive login:** run `claude` once on the host so `~/.claude/` and
     `~/.claude.json` exist; used when `ANTHROPIC_API_KEY` is unset.
-- A passphrase-less SSH key for `git push` if you want the loop to push
-  merged work to a remote.
+- A passphrase-less SSH key (or other `git push` credential) if you want the
+  loop to push to a remote. When `origin` is reachable the loop pushes
+  continuously — each reaped `auto/<phase-id>` work branch, the base branch
+  after every squash merge, and the merged-branch deletes; with no `origin` it
+  all silently no-ops and work stays local.
 - Docker installed.
 - A non-trunk base branch checked out (the loop refuses to land work
   directly on `main`). Convention: `autonomous-runner`, cut from `main`.
@@ -346,11 +358,12 @@ The worker is given one phase id per tick. Its contract:
      the short SHA.
 6. Rename the phase doc `phase-<id>-*.md` → `DONE_phase-<id>-*.md`.
    That rename is the unambiguous "I'm done" signal.
-7. Merge `auto/<phase-id>` → `$BASE_BRANCH` with `--no-ff`. Push
-   (best-effort). Delete the feature branch.
-8. Update the manifest entry: `[pending]` → `[merged]`, fill in Branch,
-   Commits, Merged at, Merge SHA. Commit on `$BASE_BRANCH`.
-9. Exit `0`.
+7. Exit `0`. The worker never merges, pushes, or touches the manifest —
+   those are **driver-owned**. After the worker exits, the driver pushes
+   the `auto/<phase-id>` branch to `origin`, **squash-merges** it into
+   `$BASE_BRANCH` as a single commit (whose body lists the worker's
+   individual commit subjects), flips the manifest entry to `[merged]`,
+   pushes `$BASE_BRANCH`, and deletes the merged remote branch.
 
 The full text lives in [prompts/worker.md](prompts/worker.md). Edit it
 if your project doesn't use `pnpm`, doesn't use Turborepo, has a
@@ -737,6 +750,11 @@ remain valid as launch-time environment variables.
 | `RETRY_TRANSIENT_API` | `1` | Relaunch (don't park) a worker that died on a transient server-side API error — HTTP 500/502/503, 529 overloaded, dropped socket — distinct from a rate limit. Set `0` to park them instead. |
 | `TRANSIENT_API_MAX_RETRIES` | `10` | Per-phase cap on transient-API relaunches before the phase is parked/halted, so a sustained outage can't loop forever. |
 | `STUCK_TIMEOUT` | `0` (off) | Seconds with no transcript growth before a running worker is treated as hung, killed, and relaunched. `0` disables (a long gate can be legitimately quiet — set above your gate's worst-case runtime). |
+| **Pull request** | | |
+| `OPEN_PR` | `0` | When `1`, once every phase is merged the loop opens a single PR from the base/runner branch into `PR_BASE` via `gh` (each phase is already one squash commit, so the PR is clean). Needs `gh` installed + authenticated on the host and an `origin` remote. Best-effort: a missing `gh`/remote, or a base that already equals `PR_BASE`, just skips with a log line. An already-open PR is left as-is. |
+| `PR_BASE` | `main` | Target branch for the auto-opened PR. |
+| `PR_TITLE` | (from commits) | PR title. Empty → `gh --fill` derives the title/body from the squashed commits. |
+| `PR_DRAFT` | `0` | When `1`, open the PR as a draft. |
 | **Agent driver** | | |
 | `AGENT_DRIVER` | `claude` | Which agent CLI runs each worker: `claude` (Claude Code) or `opencode` (OpenCode; model-agnostic). See [Agent drivers](#agent-drivers-claude-code-or-opencode--ollama). |
 | `AGENT_MODEL` | (driver default) | For `opencode`: the `provider/model`, e.g. `ollama/qwen2.5-coder` (local/free) or a hosted model. |
