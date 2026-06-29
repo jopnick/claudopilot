@@ -11,7 +11,14 @@
  * `gh`, or any failure, comes back as a typed result the driver logs past.
  */
 
-import { spawnCapture } from "./platform/process.js";
+import { spawnCapture, type SpawnCaptureResult } from "./platform/process.js";
+
+/** The spawn surface `openPullRequest` uses — injectable so tests need no real `gh`. */
+export type RunFn = (
+  cmd: string,
+  args: readonly string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv },
+) => Promise<SpawnCaptureResult>;
 
 export interface OpenPrOptions {
   /** Repo working directory (`gh` infers the remote/repo from here). */
@@ -47,15 +54,20 @@ export type OpenPrFn = (opts: OpenPrOptions) => Promise<OpenPrResult>;
  * keeps the call non-interactive (no body prompt on a TTY-less host). A
  * `--title` overrides just the subject. An already-open PR is reported as
  * success so a re-run of a completed loop is idempotent.
+ *
+ * `run` is injectable purely as a test seam (defaults to the real `gh` spawn).
  */
-export async function openPullRequest(opts: OpenPrOptions): Promise<OpenPrResult> {
+export async function openPullRequest(
+  opts: OpenPrOptions,
+  run: RunFn = spawnCapture,
+): Promise<OpenPrResult> {
   const args = ["pr", "create", "--base", opts.base, "--head", opts.head, "--fill"];
   if (opts.title) args.push("--title", opts.title);
   if (opts.draft) args.push("--draft");
 
   let res;
   try {
-    res = await spawnCapture("gh", args, {
+    res = await run("gh", args, {
       cwd: opts.cwd,
       ...(opts.env ? { env: opts.env } : {}),
     });

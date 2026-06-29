@@ -1,51 +1,43 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { openPullRequest } from "./pr.js";
+import { describe, it, expect } from "vitest";
+import { openPullRequest, type RunFn } from "./pr.js";
+import type { SpawnCaptureResult } from "./platform/process.js";
 
 /**
- * These tests shim a fake `gh` onto PATH so `openPullRequest` exercises the real
- * spawn/parse path without needing GitHub. The fake echoes its behavior based on
- * env knobs the test sets.
+ * `openPullRequest` takes an injectable `run` seam, so these tests stub the
+ * `gh` invocation directly — no real binary, no PATH shimming (which is what
+ * broke on Windows CI). The stub records args and returns canned results.
  */
-let binDir: string;
-let savedPath: string | undefined;
+const result = (over: Partial<SpawnCaptureResult> = {}): SpawnCaptureResult => ({
+  code: 0,
+  signal: null,
+  stdout: "",
+  stderr: "",
+  timedOut: false,
+  ...over,
+});
 
-async function writeFakeGh(body: string): Promise<void> {
-  const p = path.join(binDir, "gh");
-  await fs.writeFile(p, `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+/** A run stub that captures the args it was called with. */
+function recordingRun(res: SpawnCaptureResult): { run: RunFn; calls: string[][] } {
+  const calls: string[][] = [];
+  const run: RunFn = async (_cmd, args) => {
+    calls.push([...args]);
+    return res;
+  };
+  return { run, calls };
 }
-
-beforeEach(async () => {
-  binDir = await fs.mkdtemp(path.join(os.tmpdir(), "cp-gh-"));
-  savedPath = process.env["PATH"];
-  process.env["PATH"] = `${binDir}:${savedPath ?? ""}`;
-});
-
-afterEach(async () => {
-  process.env["PATH"] = savedPath;
-  await fs.rm(binDir, { recursive: true, force: true });
-});
 
 describe("openPullRequest", () => {
   it("returns ok + url on success and forwards base/head/title/draft", async () => {
-    // Record args, print a PR URL.
-    await writeFakeGh(
-      `echo "$@" > "${binDir}/args.txt"\n` +
-        `echo "https://github.com/acme/repo/pull/42"\n` +
-        `exit 0`,
+    const { run, calls } = recordingRun(
+      result({ stdout: "https://github.com/acme/repo/pull/42\n" }),
     );
-    const r = await openPullRequest({
-      cwd: binDir,
-      head: "autonomous-runner",
-      base: "main",
-      title: "Batch",
-      draft: true,
-    });
+    const r = await openPullRequest(
+      { cwd: "/repo", head: "autonomous-runner", base: "main", title: "Batch", draft: true },
+      run,
+    );
     expect(r.ok).toBe(true);
     expect(r.url).toBe("https://github.com/acme/repo/pull/42");
-    const args = await fs.readFile(path.join(binDir, "args.txt"), "utf8");
+    const args = calls[0]!.join(" ");
     expect(args).toContain("pr create");
     expect(args).toContain("--base main");
     expect(args).toContain("--head autonomous-runner");
@@ -54,27 +46,40 @@ describe("openPullRequest", () => {
     expect(args).toContain("--draft");
   });
 
+  it("omits --title and --draft when not requested", async () => {
+    const { run, calls } = recordingRun(result({ stdout: "https://x/pull/1" }));
+    await openPullRequest({ cwd: "/repo", head: "runner", base: "main" }, run);
+    const args = calls[0]!.join(" ");
+    expect(args).not.toContain("--title");
+    expect(args).not.toContain("--draft");
+  });
+
   it("treats an already-existing PR as success", async () => {
-    await writeFakeGh(
-      `echo "a pull request for branch already exists: https://github.com/acme/repo/pull/7" 1>&2\n` +
-        `exit 1`,
+    const { run } = recordingRun(
+      result({
+        code: 1,
+        stderr:
+          "a pull request for branch already exists: https://github.com/acme/repo/pull/7",
+      }),
     );
-    const r = await openPullRequest({ cwd: binDir, head: "runner", base: "main" });
+    const r = await openPullRequest({ cwd: "/repo", head: "runner", base: "main" }, run);
     expect(r.ok).toBe(true);
     expect(r.alreadyExists).toBe(true);
     expect(r.url).toBe("https://github.com/acme/repo/pull/7");
   });
 
   it("returns a failure reason on a real gh error", async () => {
-    await writeFakeGh(`echo "could not determine base repo" 1>&2\nexit 1`);
-    const r = await openPullRequest({ cwd: binDir, head: "runner", base: "main" });
+    const { run } = recordingRun(result({ code: 1, stderr: "could not determine base repo" }));
+    const r = await openPullRequest({ cwd: "/repo", head: "runner", base: "main" }, run);
     expect(r.ok).toBe(false);
     expect(r.reason).toContain("could not determine base repo");
   });
 
-  it("never throws when gh is missing", async () => {
-    process.env["PATH"] = "/nonexistent";
-    const r = await openPullRequest({ cwd: binDir, head: "runner", base: "main" });
+  it("never throws when gh cannot be spawned", async () => {
+    const run: RunFn = async () => {
+      throw new Error("spawn gh ENOENT");
+    };
+    const r = await openPullRequest({ cwd: "/repo", head: "runner", base: "main" }, run);
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/gh not available/);
   });
