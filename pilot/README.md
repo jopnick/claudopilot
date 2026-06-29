@@ -5,13 +5,14 @@ reimplemented natively for Claude Code. **No Docker, no `claude -p`
 subprocesses, no separate CLI** — the Claude Code session you're already in
 *becomes* the driver, and phase work fans out to background agents.
 
-It ships three pieces:
+It ships four pieces:
 
 | Piece | Type | Role |
 | --- | --- | --- |
 | `pilot-run` | skill | The **driver**. Reads `roadmap/EXECUTION-MANIFEST.md`, schedules eligible phases by dependency graph, launches workers, merges green branches serially, owns the manifest, escalates red gates. Also scaffolds a roadmap if none exists. |
 | `phase-worker` | agent | Executes **one phase** end-to-end in a driver-prepared git worktree on its `auto/<id>` branch: implements slices, runs the project's gate, commits per slice, renames the phase doc `DONE_`. Never merges. |
 | `phase-supervisor` | agent | Unsticks a halted worker with the smallest possible fix, then steps back. Never merges, never authors features. |
+| `phase-reviewer` | agent | The optional **convergence review gate** (`/pilot-run --review`): reviews a finished phase's diff read-only through one lens (correctness/security/scope/tests) or refutes a finding as a skeptic, before the driver merges. Never edits. |
 
 ## Install
 
@@ -23,8 +24,8 @@ This repo *is* the marketplace. From any Claude Code session:
 ```
 
 New sessions then have the `/pilot-run` skill and the `pilot:phase-worker` /
-`pilot:phase-supervisor` agent types available in **any** repo. Run it from the
-root of the repo you want to drive:
+`pilot:phase-supervisor` / `pilot:phase-reviewer` agent types available in
+**any** repo. Run it from the root of the repo you want to drive:
 
 ```
 /pilot-run

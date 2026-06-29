@@ -59,6 +59,28 @@ describe("decideRound matches the REVIEW-GATE.md table (cross-driver drift guard
   }
 });
 
+describe("the native pilot-run SKILL reproduces the decideRound table verbatim", () => {
+  // REVIEW-GATE.md says SKILL.md must reproduce the table verbatim; this guards
+  // the second (native) driver against drifting from the source of truth.
+  const tableRows = (file: string): string[] => {
+    const md = readFileSync(path.resolve(__dirname, "..", "..", file), "utf8");
+    const begin = md.indexOf("DECIDE-ROUND-TABLE:BEGIN");
+    const end = md.indexOf("DECIDE-ROUND-TABLE:END");
+    return md
+      .slice(begin, end)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("|"));
+  };
+
+  it("matches REVIEW-GATE.md row for row", () => {
+    const spec = tableRows("REVIEW-GATE.md");
+    const skill = tableRows(path.join("pilot", "skills", "pilot-run", "SKILL.md"));
+    expect(spec.length).toBeGreaterThanOrEqual(8);
+    expect(skill).toEqual(spec);
+  });
+});
+
 describe("decideRound precedence", () => {
   it("a clean round always merges, even if the oscillating flag is set", () => {
     expect(decideRound({ confirmed: 0, oscillating: true, round: 9, maxRounds: 3 })).toEqual({
