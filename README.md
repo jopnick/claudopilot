@@ -98,6 +98,36 @@ Key knobs (full list under [Configuration](#configuration-environment-variables)
 `MAX_PARALLEL` (default 3), `GATE_CMD` (the per-phase quality gate; must match
 `worker.md` and the pre-commit hook), `WORKTREE_PREPARE_CMD`, `POLL_SECONDS`.
 
+## Multi-engineer coordination
+
+The scheduler above keeps **one run** safe. If several engineers run claudopilot
+against the **same roadmap and remote**, nothing stops two of them from picking
+the same `[pending]` phase and duplicating or colliding on it — each has its own
+local manifest.
+
+Set **`COORDINATE_LOCKS=1`** to make the driver engineer-conscious. Before
+launching a phase it claims a lock by creating the ref
+`refs/claudopilot/locks/<phase-id>` on `origin`. The claim is a plain (non-force)
+push of a freshly-minted commit: git only lets you *create* a ref or
+*fast-forward* it, and an unrelated commit is never a fast-forward — so if the
+lock already exists the push is rejected and **exactly one engineer wins** each
+phase. A phase another engineer holds is simply skipped this pass.
+
+- **Heartbeats.** A held lock is refreshed every `LOCK_HEARTBEAT_SECONDS` (default
+  60). A lock with no heartbeat for `LOCK_STALE_SECONDS` (default 900) is treated
+  as abandoned — a crashed engineer — and may be **stolen** by another runner.
+- **Release.** Locks are dropped when a phase merges, is parked, or on shutdown,
+  so the work is immediately available to whoever wants it next.
+- **Identity.** Locks are stamped with `ENGINEER_ID` (default: your git
+  `user.email`) so skip/steal messages name who holds what.
+- **Fail-open.** If `origin` is unreachable, claiming a *new* lock proceeds
+  uncoordinated with a warning rather than blocking an offline engineer; only a
+  genuine *rejection* (a live lock) blocks a launch.
+
+This prevents **concurrent** overlap. To also avoid **re-doing** a phase another
+engineer already merged, start each run from a freshly-pulled base branch so your
+manifest already reflects their `[merged]` entries.
+
 > Generate a compatible roadmap with the repo's `/plan-build` skill — it emits
 > `.claudopilot/roadmap/EXECUTION-MANIFEST.md` (with `(deps: …)`) + per-phase docs whose
 > package-disjoint streams map straight onto this scheduler.
@@ -737,6 +767,11 @@ remain valid as launch-time environment variables.
 | `RETRY_TRANSIENT_API` | `1` | Relaunch (don't park) a worker that died on a transient server-side API error — HTTP 500/502/503, 529 overloaded, dropped socket — distinct from a rate limit. Set `0` to park them instead. |
 | `TRANSIENT_API_MAX_RETRIES` | `10` | Per-phase cap on transient-API relaunches before the phase is parked/halted, so a sustained outage can't loop forever. |
 | `STUCK_TIMEOUT` | `0` (off) | Seconds with no transcript growth before a running worker is treated as hung, killed, and relaunched. `0` disables (a long gate can be legitimately quiet — set above your gate's worst-case runtime). |
+| **Multi-engineer coordination** | | |
+| `COORDINATE_LOCKS` | `0` | When `1`, claim a remote git ref-lock (`refs/claudopilot/locks/<phase-id>`) before launching each phase, so two engineers running the same roadmap against the same remote never work the same phase at once. Needs a reachable `origin`. Fail-open: if the remote is unreachable, work proceeds uncoordinated with a warning. See [Multi-engineer coordination](#multi-engineer-coordination). |
+| `ENGINEER_ID` | (git `user.email`) | Identity stamped on locks this engine takes (shown when another engineer skips a phase you hold). |
+| `LOCK_HEARTBEAT_SECONDS` | `60` | Minimum seconds between heartbeat pushes that keep a held lock fresh. |
+| `LOCK_STALE_SECONDS` | `900` | A held lock with no heartbeat for this long is considered abandoned (crashed engineer) and may be stolen. Keep it well above `LOCK_HEARTBEAT_SECONDS`. |
 | **Agent driver** | | |
 | `AGENT_DRIVER` | `claude` | Which agent CLI runs each worker: `claude` (Claude Code) or `opencode` (OpenCode; model-agnostic). See [Agent drivers](#agent-drivers-claude-code-or-opencode--ollama). |
 | `AGENT_MODEL` | (driver default) | For `opencode`: the `provider/model`, e.g. `ollama/qwen2.5-coder` (local/free) or a hosted model. |

@@ -70,6 +70,15 @@ export interface Config {
   transientApiMaxRetries: number;
   stuckTimeout: number;
 
+  /** Coordinate phase ownership across engineers via remote git ref locks. */
+  coordinateLocks: boolean;
+  /** Identity stamped on locks this engine takes (default: git user.email). */
+  engineerId: string;
+  /** Minimum seconds between heartbeat pushes for a held lock. */
+  lockHeartbeatSeconds: number;
+  /** A lock with no heartbeat for this many seconds is stealable. */
+  lockStaleSeconds: number;
+
   runDir: string;
   worktreesDir: string;
   controlDir: string;

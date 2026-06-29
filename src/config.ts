@@ -49,6 +49,10 @@ const JSON_TO_ENV: Record<string, string> = {
   retryTransientApi: "RETRY_TRANSIENT_API",
   transientApiMaxRetries: "TRANSIENT_API_MAX_RETRIES",
   stuckTimeout: "STUCK_TIMEOUT",
+  coordinateLocks: "COORDINATE_LOCKS",
+  engineerId: "ENGINEER_ID",
+  lockHeartbeatSeconds: "LOCK_HEARTBEAT_SECONDS",
+  lockStaleSeconds: "LOCK_STALE_SECONDS",
   logFile: "LOG_FILE",
 };
 const KNOWN_ENV = new Set(Object.values(JSON_TO_ENV));
@@ -64,6 +68,7 @@ export const BOOL_ENV_KEYS = new Set([
   "KEEP_GOING",
   "IGNORE_LOOP_CHECKPOINTS",
   "RETRY_TRANSIENT_API",
+  "COORDINATE_LOCKS",
 ]);
 
 /** Config env keys whose values are integers. */
@@ -78,6 +83,8 @@ export const INT_ENV_KEYS = new Set([
   "DEFAULT_RATE_LIMIT_SLEEP",
   "TRANSIENT_API_MAX_RETRIES",
   "STUCK_TIMEOUT",
+  "LOCK_HEARTBEAT_SECONDS",
+  "LOCK_STALE_SECONDS",
 ]);
 
 /**
@@ -313,6 +320,11 @@ export async function loadConfig(
     retryTransientApi: pickBoolNumeric("RETRY_TRANSIENT_API", true),
     transientApiMaxRetries: pickInt("TRANSIENT_API_MAX_RETRIES", 10),
     stuckTimeout: pickInt("STUCK_TIMEOUT", 0),
+
+    coordinateLocks: pickBoolNumeric("COORDINATE_LOCKS", false),
+    engineerId: pickRaw("ENGINEER_ID", ""),
+    lockHeartbeatSeconds: pickInt("LOCK_HEARTBEAT_SECONDS", 60),
+    lockStaleSeconds: pickInt("LOCK_STALE_SECONDS", 900),
 
     runDir,
     worktreesDir: path.join(runDir, "worktrees"),

@@ -43,6 +43,10 @@ function cfg(overrides: Partial<Config> = {}): Config {
     retryTransientApi: true,
     transientApiMaxRetries: 10,
     stuckTimeout: 0,
+    coordinateLocks: false,
+    engineerId: "",
+    lockHeartbeatSeconds: 60,
+    lockStaleSeconds: 900,
     runDir: "/repo/.claudopilot",
     worktreesDir: "/repo/.claudopilot/worktrees",
     controlDir: "/repo/.claudopilot/control",
@@ -351,6 +355,62 @@ describe("runDriver trunk guard + completion", () => {
     const txt = await readFile(mf, "utf8");
     expect(txt).toContain("**Status:** complete");
     expect(committedCount).toBeGreaterThan(0);
+  });
+
+  it("skips an eligible phase whose lock another engineer holds (no launch)", async () => {
+    const mf = path.join(tmp, "M.md");
+    await writeFile(
+      mf,
+      "**Status:** running\n\n## Order\n\n1. [pending] **phase-x** — y (deps: none)\n",
+    );
+    await writeFile(path.join(tmp, "prompt.md"), "x");
+    const conf = cfg({
+      repoRoot: tmp,
+      manifest: mf,
+      promptFile: path.join(tmp, "prompt.md"),
+      runDir: path.join(tmp, "rd"),
+      worktreesDir: path.join(tmp, "rd/wt"),
+      controlDir: path.join(tmp, "rd/c"),
+      coordinateLocks: true,
+    });
+    const r0 = { code: 0, signal: null, stdout: "", stderr: "", timedOut: false };
+    let worktreeAdds = 0;
+    const git = {
+      add: async () => r0,
+      commit: async () => r0,
+      push: async () => r0,
+      worktreeAdd: async () => {
+        worktreeAdds++;
+        return r0;
+      },
+    };
+    const claimed: string[] = [];
+    const deps: DriverDeps = {
+      git: git as unknown as DriverDeps["git"],
+      log: () => {},
+      sleep: async () => {},
+      shellRunFn: async () => ({ code: 0 }),
+      coordinator: {
+        claim: async (id: string) => {
+          claimed.push(id);
+          return false; // held elsewhere
+        },
+        heartbeat: async () => {},
+        release: async () => {},
+        releaseAll: async () => {},
+        held: () => new Set<string>(),
+      },
+    };
+    // Eligible but unclaimable → never launches → deadlock (exit 3).
+    const code = await runDriver(deps, {
+      config: conf,
+      baseBranch: "autonomous-runner",
+      workerPrompt: "WP",
+      supervisorPrompt: "SP",
+    });
+    expect(code).toBe(3);
+    expect(claimed).toContain("phase-x");
+    expect(worktreeAdds).toBe(0);
   });
 
   it("returns 3 when manifest is missing", async () => {
