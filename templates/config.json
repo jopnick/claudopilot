@@ -7,5 +7,9 @@
   "keepGoing": false,
   "retryTransientApi": true,
   "transientApiMaxRetries": 10,
-  "stuckTimeout": 0
+  "stuckTimeout": 0,
+  "reviewEnabled": false,
+  "reviewLenses": "correctness,security,scope,tests",
+  "reviewSkeptics": 2,
+  "reviewMaxRounds": 3
 }

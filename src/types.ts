@@ -70,6 +70,14 @@ export interface Config {
   transientApiMaxRetries: number;
   stuckTimeout: number;
 
+  // Convergence review gate (opt-in; see REVIEW-GATE.md).
+  reviewEnabled: boolean;
+  reviewLenses: string;
+  reviewSkeptics: number;
+  reviewMaxRounds: number;
+  reviewerPromptFile: string;
+  reviewModel: string;
+
   runDir: string;
   worktreesDir: string;
   controlDir: string;

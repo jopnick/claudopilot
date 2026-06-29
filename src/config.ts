@@ -49,6 +49,12 @@ const JSON_TO_ENV: Record<string, string> = {
   retryTransientApi: "RETRY_TRANSIENT_API",
   transientApiMaxRetries: "TRANSIENT_API_MAX_RETRIES",
   stuckTimeout: "STUCK_TIMEOUT",
+  reviewEnabled: "REVIEW_ENABLED",
+  reviewLenses: "REVIEW_LENSES",
+  reviewSkeptics: "REVIEW_SKEPTICS",
+  reviewMaxRounds: "REVIEW_MAX_ROUNDS",
+  reviewerPromptFile: "REVIEWER_PROMPT_FILE",
+  reviewModel: "REVIEW_MODEL",
   logFile: "LOG_FILE",
 };
 const KNOWN_ENV = new Set(Object.values(JSON_TO_ENV));
@@ -64,6 +70,7 @@ export const BOOL_ENV_KEYS = new Set([
   "KEEP_GOING",
   "IGNORE_LOOP_CHECKPOINTS",
   "RETRY_TRANSIENT_API",
+  "REVIEW_ENABLED",
 ]);
 
 /** Config env keys whose values are integers. */
@@ -78,6 +85,8 @@ export const INT_ENV_KEYS = new Set([
   "DEFAULT_RATE_LIMIT_SLEEP",
   "TRANSIENT_API_MAX_RETRIES",
   "STUCK_TIMEOUT",
+  "REVIEW_SKEPTICS",
+  "REVIEW_MAX_ROUNDS",
 ]);
 
 /**
@@ -261,6 +270,11 @@ export async function loadConfig(
       ".claudopilot/prompts/supervisor.md",
       "claudopilot/prompts/supervisor.md",
     ])) ?? ".claudopilot/prompts/supervisor.md";
+  const defaultReviewerPrompt =
+    (await firstExistingRel(repoRoot, [
+      ".claudopilot/prompts/reviewer.md",
+      "claudopilot/prompts/reviewer.md",
+    ])) ?? ".claudopilot/prompts/reviewer.md";
 
   const roadmapDir = pick("ROADMAP_DIR", defaultRoadmapDir);
   const runDir = engineRunDir(repoRoot);
@@ -313,6 +327,16 @@ export async function loadConfig(
     retryTransientApi: pickBoolNumeric("RETRY_TRANSIENT_API", true),
     transientApiMaxRetries: pickInt("TRANSIENT_API_MAX_RETRIES", 10),
     stuckTimeout: pickInt("STUCK_TIMEOUT", 0),
+
+    reviewEnabled: pickBoolNumeric("REVIEW_ENABLED", false),
+    reviewLenses: pick("REVIEW_LENSES", "correctness,security,scope,tests"),
+    reviewSkeptics: pickInt("REVIEW_SKEPTICS", 2),
+    reviewMaxRounds: pickInt("REVIEW_MAX_ROUNDS", 3),
+    reviewerPromptFile: pick(
+      "REVIEWER_PROMPT_FILE",
+      path.join(repoRoot, defaultReviewerPrompt),
+    ),
+    reviewModel: pickRaw("REVIEW_MODEL", ""),
 
     runDir,
     worktreesDir: path.join(runDir, "worktrees"),
