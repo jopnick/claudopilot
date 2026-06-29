@@ -46,6 +46,12 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     retryTransientApi: true,
     transientApiMaxRetries: 10,
     stuckTimeout: 0,
+    reviewEnabled: false,
+    reviewLenses: "correctness,security,scope,tests",
+    reviewSkeptics: 2,
+    reviewMaxRounds: 3,
+    reviewerPromptFile: "/repo/prompts/reviewer.md",
+    reviewModel: "",
     runDir: "/repo/.claudopilot/.run",
     worktreesDir: "/repo/.claudopilot/.run/worktrees",
     controlDir: "/repo/.claudopilot/.run/control",
@@ -339,6 +345,35 @@ describe("launch — isolated mode", () => {
     expect(captured?.env["CLAUDOPILOT_RESUME_SID"]).toBe("sess-abc");
     expect(captured?.env["SUPERVISOR_MODE"]).toBe("best-effort");
   });
+
+  it("writes promptOverride verbatim to the prompt file", async () => {
+    const cfg = baseConfig({ isolated: true });
+    const wt = path.join(tmp, "wt");
+    await mkdir(wt, { recursive: true });
+    const docker: DockerLike = {
+      async run() {
+        return { code: 0, signal: null };
+      },
+      async rmForce() {},
+    };
+    const { git } = makeFakeGit();
+    const rec = await launch(
+      { git, docker },
+      {
+        id: "phase-z",
+        config: cfg,
+        workerPrompt: "WORKER BODY",
+        paths: setCapturePaths("phase-z", cfg, wt),
+        worktree: wt,
+        baseBranch: "main",
+        promptOverride: "REVIEW FIX PROMPT",
+      },
+    );
+    await rec.done;
+    const written = await readFile(path.join(wt, ".claudopilot", ".run", "phase-z.prompt.txt"), "utf8");
+    expect(written).toBe("REVIEW FIX PROMPT");
+    expect(written).not.toContain("phase to execute is");
+  });
 });
 
 describe("launch — default mode", () => {
@@ -428,6 +463,57 @@ describe("launch — default mode", () => {
     const arg = fake.mock.calls[0]![0];
     expect(arg.driver).toBe("opencode");
     expect(arg.model).toBe("ollama/qwen2.5-coder");
+  });
+
+  it("uses promptOverride verbatim instead of workerPrompt + suffix", async () => {
+    const cfg = baseConfig({ runDir: path.join(tmp, "rd") });
+    const wt = path.join(tmp, "wt");
+    await mkdir(wt, { recursive: true });
+    const paths = setCapturePaths("phase-d", cfg, wt);
+    const fake = vi.fn().mockResolvedValue({ code: 0, signal: null });
+    const { git } = makeFakeGit();
+    const rec = await launch(
+      { git, captureAgentFn: fake as unknown as WorkerDeps["captureAgentFn"] },
+      {
+        id: "phase-d",
+        config: cfg,
+        workerPrompt: "BODY",
+        paths,
+        worktree: wt,
+        baseBranch: "main",
+        promptOverride: "REVIEW FIX PROMPT",
+      },
+    );
+    await rec.done;
+    const arg = fake.mock.calls[0]![0];
+    expect(arg.prompt).toBe("REVIEW FIX PROMPT");
+    expect(arg.prompt).not.toContain("phase to execute is");
+  });
+
+  it("resume nudge wins over promptOverride", async () => {
+    const cfg = baseConfig({ runDir: path.join(tmp, "rd") });
+    const wt = path.join(tmp, "wt");
+    await mkdir(wt, { recursive: true });
+    const paths = setCapturePaths("phase-d", cfg, wt);
+    const fake = vi.fn().mockResolvedValue({ code: 0, signal: null });
+    const { git } = makeFakeGit();
+    const rec = await launch(
+      { git, captureAgentFn: fake as unknown as WorkerDeps["captureAgentFn"] },
+      {
+        id: "phase-d",
+        config: cfg,
+        workerPrompt: "BODY",
+        paths,
+        worktree: wt,
+        baseBranch: "main",
+        resumeSid: "sess-1",
+        promptOverride: "REVIEW FIX PROMPT",
+      },
+    );
+    await rec.done;
+    const arg = fake.mock.calls[0]![0];
+    expect(arg.prompt).toContain("transient interruption");
+    expect(arg.prompt).not.toContain("REVIEW FIX PROMPT");
   });
 });
 

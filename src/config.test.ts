@@ -32,6 +32,26 @@ describe("loadConfig", () => {
     expect(c.isolated).toBe(false);
     expect(c.retryTransientApi).toBe(true);
     expect(c.runDir).toBe(path.join(repo, ".claudopilot", ".run"));
+    // Convergence review gate is opt-in and OFF by default.
+    expect(c.reviewEnabled).toBe(false);
+    expect(c.reviewLenses).toBe("correctness,security,scope,tests");
+    expect(c.reviewSkeptics).toBe(2);
+    expect(c.reviewMaxRounds).toBe(3);
+  });
+
+  it("turns the review gate on and tunes it via env + config.json", async () => {
+    await fs.mkdir(path.join(repo, ".claudopilot"), { recursive: true });
+    await fs.writeFile(
+      path.join(repo, ".claudopilot", "config.json"),
+      JSON.stringify({ reviewEnabled: true, reviewLenses: "correctness,security", reviewSkeptics: 3 }),
+    );
+    const c = await loadConfig(repo, { REVIEW_MAX_ROUNDS: "5", REVIEW_MODEL: "claude-opus-4-8" });
+    expect(c.reviewEnabled).toBe(true);
+    expect(c.reviewLenses).toBe("correctness,security");
+    expect(c.reviewSkeptics).toBe(3);
+    // Env overrides the file/default.
+    expect(c.reviewMaxRounds).toBe(5);
+    expect(c.reviewModel).toBe("claude-opus-4-8");
   });
 
   it("applies values from claudopilot.config.sh on top of defaults", async () => {

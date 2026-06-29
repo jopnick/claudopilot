@@ -729,11 +729,39 @@ async function cmdRun(args: readonly string[]): Promise<number> {
   const baseBranch = (await git.currentBranch()) ?? "main";
   const workerPrompt = await fsp.readFile(config.promptFile, "utf8");
   const supervisorPrompt = await fsp.readFile(config.supervisorPromptFile, "utf8");
+  // The reviewer prompt is only needed when the convergence review gate is on.
+  // Prefer the repo-local copy; fall back to the one packaged with the engine.
+  let reviewerPrompt = "";
+  if (config.reviewEnabled) {
+    reviewerPrompt = await readReviewerPrompt(config.reviewerPromptFile);
+  }
   const code = await runDriver(
     { git, docker: dockerLike(docker), log: writeOut },
-    { config, baseBranch, workerPrompt, supervisorPrompt },
+    { config, baseBranch, workerPrompt, supervisorPrompt, reviewerPrompt },
   );
   return code;
+}
+
+/**
+ * Read the reviewer/skeptic prompt for the convergence review gate. Tries the
+ * configured (repo-local) path first, then the copy packaged with the engine.
+ * Returns "" with a warning if neither exists — the gate then synthesizes a
+ * blocker rather than merging, so review fails safe (never a silent clean pass).
+ */
+async function readReviewerPrompt(primary: string): Promise<string> {
+  for (const p of [primary, join(PKG_ROOT, "prompts", "reviewer.md")]) {
+    try {
+      return await fsp.readFile(p, "utf8");
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  writeErr(
+    "[claudopilot] WARNING: reviewEnabled but no reviewer prompt found " +
+      `(looked in ${primary} and the packaged prompts/reviewer.md); ` +
+      "review rounds will block until one exists.",
+  );
+  return "";
 }
 
 // ── DockerLike adapter ─────────────────────────────────────────────────────

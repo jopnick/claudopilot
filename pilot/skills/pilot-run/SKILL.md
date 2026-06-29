@@ -39,6 +39,13 @@ Parse from the skill args (all optional):
 - `--push` — push the base branch after each merge (default: no pushes).
 - `--gate "<cmd>"` / `--prepare "<cmd>"` — override the resolved gate /
   worktree-prepare commands.
+- `--review` — enable the **convergence review gate** before each merge (see
+  the section below). **Off by default**; without it a phase merges as soon as
+  its gate is green and the doc is `DONE_` — exactly as today.
+  - `--review-lenses "<a,b,...>"` — review lenses (default
+    `correctness,security,scope,tests`); one reviewer runs per lens.
+  - `--review-skeptics N` — refuting skeptics per gating finding (default `2`).
+  - `--review-max-rounds N` — review→fix rounds before parking (default `3`).
 
 ## Resolve repo parameters (first run in a repo)
 
@@ -137,6 +144,12 @@ checkout:
 1. Verify the done signal: the tip of `auto/<phase-id>` contains the rename
    to `roadmap/DONE_<phase-id>-*.md`. If the rename is missing, treat as
    `halted` (silent stall) instead of merging.
+1a. **Review gate — only with `--review`.** Before the merge command, run one
+   review round (see *Convergence review gate* below). Proceed to `git merge`
+   **only** when the round is clean (`merge`). On `fix`, relaunch the worker
+   and stop processing this phase this tick (its next `done` re-enters here).
+   On `park`, mark the phase `[blocked]`/`[failed]` and skip the merge. Without
+   `--review`, skip straight to the merge.
 2. `git merge --no-ff auto/<phase-id> -m "merge(phase-<id>): <phase title>"`.
    On conflict: `git merge --abort`, mark the phase `[blocked]` with a note,
    keep the branch, and surface — scope-disjoint phases must not conflict,
@@ -229,6 +242,123 @@ Track supervisor attempts per phase (in the manifest details section, e.g.
      (dependents are skipped and reported).
    - interactive (default): `AskUserQuestion` — retry with a fresh worker /
      park it and continue / stop the run.
+
+## Convergence review gate (only with `--review`)
+
+A semantic gate before the merge, **identical** to the TypeScript engine's
+(`src/orchestrator/review.ts`) and to the normative `REVIEW-GATE.md` — read that
+if you need the full rationale. **Off unless `--review` is passed**; a vanilla
+run merges exactly as it does today. One invocation = **one round**; a `fix`
+relaunches the worker and the relaunch's `done` re-enters this gate. The phase
+stays `[running]` across rounds — only a clean round merges it, only a park
+blocks it (no new manifest state).
+
+Persist round state in the phase's manifest details section so it survives ticks
+(the same place supervisor attempts live):
+
+- **Review rounds:** <number of fix rounds issued so far> (absent ⇒ 0)
+- **Review prev-confirmed:** <sorted, comma-separated confirmed finding ids from the last fix round>
+
+Run one round (the branch is already `DONE_`-verified by merge step 1; if it
+ever isn't, that is the `halted` path, not a review round):
+
+1. **Review.** For each lens in `--review-lenses` (default
+   `correctness,security,scope,tests`), spawn one `pilot:phase-reviewer` agent
+   **in parallel, foreground** (an unscoped `phase-reviewer` shadows it — use
+   whichever is listed), read-only in the phase worktree:
+
+   ```
+   Role: reviewer
+   Phase id: <phase-id>
+   Worktree path: <absolute path>
+   Base branch: <base-branch>
+   Lens: <lens>
+   Review `git diff <base-branch>...auto/<phase-id>` plus the DONE_ phase doc
+   and the repo's convention docs through the <lens> lens only. Return the
+   single reviewer JSON object and nothing else.
+   ```
+
+   Collect every result's `findings[]`. A reviewer whose output is
+   missing/unparseable/crashed contributes one **synthetic `blocker`**
+   (`id: review-error-<lens>`) — a broken reviewer never yields a silent clean
+   lens. An unknown/garbled `severity` is treated as `major` (doubt still gates).
+
+2. **Select gating findings.** Keep only `blocker` and `major`. `minor` is
+   recorded but **never** gates (this is what stops endless cosmetic polishing).
+
+3. **Adversarially verify.** For each gating finding, spawn `--review-skeptics`
+   (default 2) `pilot:phase-reviewer` agents **in parallel, foreground**, role
+   `skeptic`, each refute-by-default:
+
+   ```
+   Role: skeptic
+   Phase id: <phase-id>
+   Worktree path: <absolute path>
+   Base branch: <base-branch>
+   Try to REFUTE this finding (default to refuted unless the diff proves it
+   real): <the finding's JSON>
+   Return the single skeptic JSON object and nothing else.
+   ```
+
+   A **synthetic** finding is confirmed without a vote (skip its skeptics). A
+   real finding is **confirmed** only on a **strict majority** of `real` votes
+   (M=2 ⇒ 2 of 2). A skeptic whose output is missing/unparseable/crashed counts
+   as **refuted** — a dead skeptic never manufactures a confirmation.
+
+4. **Decide.** `confirmed` = the gating findings that survived verification;
+   `oscillating` = (`confirmed` is non-empty **AND** its sorted id-set equals
+   **Review prev-confirmed**, i.e. a fix was issued and the very same set came
+   back). Apply `decideRound` (table below) with `round` = **Review rounds** + 1
+   and `maxRounds` = `--review-max-rounds` (default 3). This table is the
+   cross-driver source of truth and is reproduced **verbatim** from
+   `REVIEW-GATE.md` — if it changes, change it there first.
+
+   <!-- DECIDE-ROUND-TABLE:BEGIN -->
+   | confirmed | oscillating | round | maxRounds | outcome | reason |
+   | --- | --- | --- | --- | --- | --- |
+   | 0 | false | 1 | 3 | merge |  |
+   | 0 | true | 2 | 3 | merge |  |
+   | 0 | false | 3 | 3 | merge |  |
+   | 2 | false | 1 | 3 | fix |  |
+   | 1 | false | 2 | 3 | fix |  |
+   | 2 | true | 2 | 3 | park | review oscillation |
+   | 1 | true | 3 | 3 | park | review oscillation |
+   | 1 | false | 3 | 3 | park | review did not converge |
+   | 3 | false | 4 | 3 | park | review did not converge |
+   <!-- DECIDE-ROUND-TABLE:END -->
+
+   Precedence top-to-bottom: a clean round (`confirmed = 0`) **always** merges,
+   regardless of any other column; else an identical recurring set
+   (`oscillating`) parks as `review oscillation` even before the cap; else
+   reaching the cap (`round >= maxRounds`) parks as `review did not converge`;
+   below the cap with confirmed findings, `fix`.
+
+5. **Apply the outcome.**
+   - **merge** — clear **Review rounds** / **Review prev-confirmed** from the
+     details and proceed to the `git merge` step.
+   - **fix** — write every confirmed finding to `roadmap/<phase-id>.review.md`
+     in the worktree (severity, lens, file, title, detail, stable id); set
+     **Review rounds** to `round` and **Review prev-confirmed** to the sorted
+     confirmed id-set; then relaunch `phase-worker` on the **same worktree**
+     (background) with this added instruction:
+
+     ```
+     Your branch was reviewed before merge. The phase doc is already DONE_ —
+     that is expected; do NOT treat the phase as finished. Fix EVERY finding in
+     roadmap/<phase-id>.review.md, keep the gate green, leave the doc DONE_,
+     then report done. Do NOT merge or edit the manifest.
+     ```
+
+     Stop processing this phase this tick; its next `done` re-enters this gate.
+   - **park** — mark the phase `[blocked]` (or `[failed]` without
+     `--keep-going`) with the reason; keep the branch; never merge.
+
+**NEVER-MERGE-RED:** the only path to a merge is `decideRound` returning `merge`
+on a clean round. Every crash, timeout, or unparseable verdict maps to a
+synthetic blocker (reviewer) or a refuted vote (skeptic) — doubt never merges.
+
+The review round counter is **independent** of supervisor attempts: a long but
+converging review must not be capped by the supervisor's max-attempts.
 
 ## Authoring mode (no manifest yet)
 

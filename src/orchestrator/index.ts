@@ -54,6 +54,32 @@ export {
   type StuckContext,
 } from "./control.js";
 
+export {
+  runReviewGate,
+  newReviewMemory,
+  decideRound,
+  gatingFindings,
+  isConfirmed,
+  parseLenses,
+  parseReviewerResult,
+  parseSkepticVerdict,
+  extractLastJsonObject,
+  syntheticBlocker,
+  buildReviewerPrompt,
+  buildSkepticPrompt,
+  buildReviewFixPrompt,
+  renderReviewNote,
+  type ReviewFinding,
+  type FindingSeverity,
+  type SkepticVerdict,
+  type ReviewContext,
+  type ReviewMemory,
+  type ReviewOutcome,
+  type RunReviewAgentArgs,
+  type RoundDecision,
+  type DecideRoundInput,
+} from "./review.js";
+
 export type {
   DockerLike,
   DockerMount,
